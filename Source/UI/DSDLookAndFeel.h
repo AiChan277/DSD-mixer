@@ -21,9 +21,14 @@ namespace dsd
                                   const juce::Colour& backgroundColour,
                                   bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
 
+        void drawButtonText(juce::Graphics& g, juce::TextButton& button,
+                            bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
+
         void drawComboBox(juce::Graphics& g, int width, int height, bool isButtonDown,
                           int buttonX, int buttonY, int buttonW, int buttonH,
                           juce::ComboBox& box) override;
+
+        juce::Font getTextButtonFont(juce::TextButton&, int buttonHeight) override;
 
         // dhd.audio Broadcast Console Palette (Light Grey Chassis)
         static juce::Colour getConsoleDarkBg()   noexcept { return juce::Colour(0xffC5C8CE); }
@@ -35,10 +40,16 @@ namespace dsd
         static juce::Colour getTextSecondary()   noexcept { return juce::Colour(0xff6B6F78); }
         static juce::Colour getTextOnOled()      noexcept { return juce::Colour(0xffE8EAED); }
         static juce::Colour getButtonOffBg()     noexcept { return juce::Colour(0xffDCDEE3); }
+
+        // Authentic Broadcast Amber Bulb Palette
+        static juce::Colour getAmberBulbCore()   noexcept { return juce::Colour(0xffffbf36); } // Glowing incandescent core
+        static juce::Colour getAmberBulbMid()    noexcept { return juce::Colour(0xffff8f00); } // Warm amber
+        static juce::Colour getAmberBulbEdge()   noexcept { return juce::Colour(0xffd84315); } // Deep rich amber
+
         static juce::Colour getAccentRed()       noexcept { return juce::Colour(0xffD32F2F); }
         static juce::Colour getAccentGreen()     noexcept { return juce::Colour(0xff2E7D32); }
         static juce::Colour getAccentBlue()      noexcept { return juce::Colour(0xff1565C0); }
-        static juce::Colour getAccentAmber()     noexcept { return juce::Colour(0xffD97706); }
+        static juce::Colour getAccentAmber()     noexcept { return juce::Colour(0xffFFA000); }
         static juce::Colour getMeterGreen()      noexcept { return juce::Colour(0xff22C55E); }
         static juce::Colour getMeterYellow()     noexcept { return juce::Colour(0xffEAB308); }
         static juce::Colour getMeterRed()        noexcept { return juce::Colour(0xffEF4444); }

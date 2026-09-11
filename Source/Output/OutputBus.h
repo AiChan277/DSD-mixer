@@ -6,14 +6,17 @@
 #include "DSP/MeterProcessor.h"
 #include <atomic>
 #include <string>
+#include <memory>
 
 namespace dsd
 {
+    class WindowsDeviceOutputSink;
+
     class OutputBus
     {
     public:
         OutputBus(BusID id, const std::string& initialName, int targetDeviceChOffset = -1);
-        ~OutputBus() = default;
+        ~OutputBus();
 
         void prepare(double sampleRate, int maxBlockSize);
         void releaseResources();
@@ -26,7 +29,7 @@ namespace dsd
         void setName(const std::string& newName) { name = newName; }
 
         std::string getOutputDeviceName() const { return outputDeviceName; }
-        void setOutputDeviceName(const std::string& name) { outputDeviceName = name; }
+        void setOutputDeviceName(const std::string& name);
 
         int getDeviceChannelOffset() const noexcept { return deviceChannelOffset.load(std::memory_order_relaxed); }
         void setDeviceChannelOffset(int offset) noexcept { deviceChannelOffset.store(offset, std::memory_order_relaxed); }
@@ -46,6 +49,8 @@ namespace dsd
         juce::AudioBuffer<float>& getBuffer() noexcept { return busBuffer; }
         const juce::AudioBuffer<float>& getBuffer() const noexcept { return busBuffer; }
 
+        bool hasDedicatedSink() const noexcept;
+
     private:
         BusID busID;
         std::string name;
@@ -61,5 +66,6 @@ namespace dsd
         MeterValues meterValues;
 
         juce::AudioBuffer<float> busBuffer;
+        std::unique_ptr<WindowsDeviceOutputSink> outputSink;
     };
 } // namespace dsd

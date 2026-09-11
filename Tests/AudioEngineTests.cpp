@@ -145,12 +145,64 @@ void testMulticoreScheduler()
               << scheduler.getNumWorkers() << " worker threads." << std::endl;
 }
 
+void testDeviceEnumeration()
+{
+    std::cout << "[TEST] Enumerating Windows Audio Devices via JUCE..." << std::endl;
+    dsd::AudioDeviceManager devMgr;
+    devMgr.initialize(2, 2);
+
+    auto& juceMgr = devMgr.getJuceManager();
+
+    juce::AudioIODeviceType* wasapiType = nullptr;
+    for (auto* type : juceMgr.getAvailableDeviceTypes())
+    {
+        if (type->getTypeName() == "Windows Audio")
+        {
+            wasapiType = type;
+            break;
+        }
+    }
+
+    if (wasapiType != nullptr)
+    {
+        wasapiType->scanForDevices();
+        auto ins = wasapiType->getDeviceNames(true);
+        auto outs = wasapiType->getDeviceNames(false);
+
+        std::cout << "  Found WASAPI Type with " << ins.size() << " inputs and " << outs.size() << " outputs." << std::endl;
+
+        if (!ins.isEmpty())
+        {
+            std::cout << "  Testing creation and open of input device: " << ins[0].toStdString() << std::endl;
+            std::unique_ptr<juce::AudioIODevice> dev(wasapiType->createDevice(juce::String(), ins[0]));
+            if (dev != nullptr)
+            {
+                std::cout << "  [SUCCESS] Created input device instance: " << dev->getName().toStdString() << std::endl;
+                juce::BigInteger inChans;
+                inChans.setRange(0, 2, true);
+                juce::BigInteger outChans; // no output
+                auto err = dev->open(inChans, outChans, 48000.0, 128);
+                if (err.isEmpty())
+                {
+                    std::cout << "  [SUCCESS] Device opened cleanly at 48000 Hz, 128 buffer." << std::endl;
+                    dev->close();
+                }
+                else
+                {
+                    std::cout << "  [INFO] Device open note: " << err.toStdString() << std::endl;
+                }
+            }
+        }
+    }
+}
+
 int main()
 {
     std::cout << "=================================================" << std::endl;
     std::cout << " DSD Mixer Level 1 - Complete Core Verification  " << std::endl;
     std::cout << "=================================================" << std::endl;
 
+    testDeviceEnumeration();
     testGainProcessor();
     testPanProcessor();
     testMeterProcessor();

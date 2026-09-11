@@ -10,7 +10,7 @@ namespace dsd
     TopBar::TopBar(AudioDeviceManager& devManager, AudioEngine& audioEngine)
         : deviceManagerRef(devManager), audioEngineRef(audioEngine)
     {
-        titleLabel.setText("DSD MIXER — LEVEL 1", juce::dontSendNotification);
+        titleLabel.setText("DSD MIXER | LEVEL 1", juce::dontSendNotification);
         titleLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
         titleLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
         addAndMakeVisible(titleLabel);

@@ -1,10 +1,24 @@
 #include "Output/OutputBus.h"
+#include "Audio/MultiDeviceManager.h"
 
 namespace dsd
 {
     OutputBus::OutputBus(BusID id, const std::string& initialName, int targetDeviceChOffset)
         : busID(id), name(initialName), deviceChannelOffset(targetDeviceChOffset)
     {
+    }
+
+    OutputBus::~OutputBus() = default;
+
+    void OutputBus::setOutputDeviceName(const std::string& name)
+    {
+        outputDeviceName = name;
+        outputSink = MultiDeviceManager::getInstance().createOutputSinkFor(name);
+    }
+
+    bool OutputBus::hasDedicatedSink() const noexcept
+    {
+        return outputSink != nullptr;
     }
 
     void OutputBus::prepare(double sampleRate, int maxBlockSize)
@@ -16,12 +30,18 @@ namespace dsd
         faderProcessor.reset(GainProcessor::dbToLinear(faderDb.load()));
 
         meterProcessor.prepare(sampleRate);
+
+        if (outputSink != nullptr)
+            outputSink->prepare(sampleRate, maxBlockSize);
     }
 
     void OutputBus::releaseResources()
     {
         busBuffer.setSize(0, 0);
         meterProcessor.reset();
+
+        if (outputSink != nullptr)
+            outputSink->releaseResources();
     }
 
     void OutputBus::setFaderDb(float db) noexcept
@@ -44,5 +64,11 @@ namespace dsd
                                     busBuffer.getReadPointer(1),
                                     numSamples,
                                     meterValues);
+
+        // Render to dedicated Windows audio device if active
+        if (outputSink != nullptr && !isMuted)
+        {
+            outputSink->writeBlock(busBuffer, numSamples);
+        }
     }
 } // namespace dsd

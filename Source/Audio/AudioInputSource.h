@@ -129,6 +129,39 @@ namespace dsd
         bool isEnabled{false};
     };
 
+    // Sine Generator alias
+    using SineInputSource = SineGeneratorSource;
+
+    // Noise Generator for signal testing
+    class NoiseGeneratorSource : public AudioInputSource
+    {
+    public:
+        NoiseGeneratorSource(float gain = 0.125f) : amplitude(gain) {}
+        ~NoiseGeneratorSource() override = default;
+
+        void prepare(double /*sampleRate*/, int /*maxBlockSize*/) override {}
+        void releaseResources() override {}
+
+        void readBlock(juce::AudioBuffer<float>& targetBuffer,
+                       const juce::AudioBuffer<float>& /*deviceInputBuffer*/,
+                       int numSamples) override
+        {
+            float* l = targetBuffer.getWritePointer(0);
+            float* r = targetBuffer.getWritePointer(1);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float white = (static_cast<float>(rand()) / static_cast<float>(RAND_MAX) * 2.0f - 1.0f) * amplitude;
+                l[i] = white;
+                r[i] = white;
+            }
+        }
+
+    private:
+        float amplitude{0.125f};
+    };
+
+    using NoiseInputSource = NoiseGeneratorSource;
+
     class NullInputSource : public AudioInputSource
     {
     public:

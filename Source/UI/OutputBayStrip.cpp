@@ -1,15 +1,19 @@
 #include "UI/OutputBayStrip.h"
 #include "UI/DSDLookAndFeel.h"
+#include "Audio/MultiDeviceManager.h"
 
 namespace dsd
 {
     OutputBayStrip::OutputBayStrip(OutputBus& bus, juce::AudioDeviceManager& deviceManager)
         : outputBusRef(bus), devMgrRef(deviceManager), stereoMeter(true)
     {
-        addAndMakeVisible(outputDeviceSelector);
+        // 1. Output Device selector at top
+        outputDeviceSelector.setTextWhenNothingSelected("None");
         outputDeviceSelector.onChange = [this]() { onDeviceSelected(); };
+        addAndMakeVisible(outputDeviceSelector);
         refreshDeviceList();
 
+        // 2. Bus Name Label (Clickable & Editable)
         busNameLabel.setText(outputBusRef.getName(), juce::dontSendNotification);
         busNameLabel.setJustificationType(juce::Justification::centred);
         busNameLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
@@ -23,14 +27,17 @@ namespace dsd
         };
         addAndMakeVisible(busNameLabel);
 
+        // 3. Illuminated Amber Buttons setup
         setupButtons();
 
+        // 4. Stereo Meter
         stereoMeter.setClipResetCallback([this]()
         {
             outputBusRef.getMeterValues().resetClip();
         });
         addAndMakeVisible(stereoMeter);
 
+        // 5. Output Fader
         fader.setValue(outputBusRef.getFaderDb(), juce::dontSendNotification);
         fader.setOnValueChanged([this](float db)
         {
@@ -42,63 +49,81 @@ namespace dsd
     void OutputBayStrip::refreshDeviceList()
     {
         outputDeviceSelector.clear(juce::dontSendNotification);
+
+        // 1. None option
         outputDeviceSelector.addItem("None", 1);
-        
-        if (auto* device = devMgrRef.getCurrentAudioDevice())
+
+        // 2. Real Windows Audio Output Devices
+        auto winOutputs = MultiDeviceManager::getInstance().getAvailableOutputDevices();
+        if (!winOutputs.isEmpty())
         {
-            auto outputNames = device->getOutputChannelNames();
-            for (int i = 0; i < outputNames.size(); i += 2)
+            outputDeviceSelector.addSectionHeading("── Windows Outputs ──");
+            for (int i = 0; i < winOutputs.size(); ++i)
             {
-                int id = i / 2 + 2;
-                juce::String label;
-                if (i + 1 < outputNames.size())
-                    label = outputNames[i] + " / " + outputNames[i + 1];
-                else
-                    label = outputNames[i];
-                outputDeviceSelector.addItem(label, id);
+                outputDeviceSelector.addItem(winOutputs[i], 100 + i);
             }
         }
 
-        int currentId = 1;
-        int currentOffset = outputBusRef.getDeviceChannelOffset();
-        if (currentOffset >= 0)
-            currentId = (currentOffset / 2) + 2;
-        outputDeviceSelector.setSelectedId(currentId, juce::dontSendNotification);
+        // Match current assigned device name
+        const juce::String currentDev = outputBusRef.getOutputDeviceName();
+        if (currentDev.isEmpty() || currentDev == "None")
+        {
+            outputDeviceSelector.setSelectedId(1, juce::dontSendNotification);
+        }
+        else
+        {
+            int foundId = -1;
+            for (int i = 0; i < winOutputs.size(); ++i)
+            {
+                if (winOutputs[i] == currentDev)
+                {
+                    foundId = 100 + i;
+                    break;
+                }
+            }
+            if (foundId > 0)
+                outputDeviceSelector.setSelectedId(foundId, juce::dontSendNotification);
+            else
+                outputDeviceSelector.setText(currentDev, juce::dontSendNotification);
+        }
     }
 
     void OutputBayStrip::onDeviceSelected()
     {
-        int selected = outputDeviceSelector.getSelectedId();
-        if (selected <= 1)
+        const int id = outputDeviceSelector.getSelectedId();
+
+        if (id <= 1)
         {
             outputBusRef.setDeviceChannelOffset(-1);
             outputBusRef.setOutputDeviceName("None");
         }
-        else
+        else if (id >= 100)
         {
-            int offset = (selected - 2) * 2;
-            outputBusRef.setDeviceChannelOffset(offset);
-            outputBusRef.setOutputDeviceName(outputDeviceSelector.getText().toStdString());
+            const juce::String selectedName = outputDeviceSelector.getText();
+            outputBusRef.setOutputDeviceName(selectedName.toStdString());
+            outputBusRef.setDeviceChannelOffset(0);
         }
     }
 
     void OutputBayStrip::setupButtons()
     {
+        // Mute Button - Illuminated Amber when ON
         muteBtn.setClickingTogglesState(true);
-        muteBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff8B2020));
-        muteBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentRed());
-        muteBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
-        muteBtn.setColour(juce::TextButton::textColourOnId, juce::Colour(0xffFFFFFF));
-        muteBtn.onClick = [this]() { outputBusRef.setMute(muteBtn.getToggleState()); };
+        muteBtn.setTooltip("Mute Output Bus");
+        muteBtn.onClick = [this]()
+        {
+            outputBusRef.setMute(muteBtn.getToggleState());
+        };
         addAndMakeVisible(muteBtn);
 
+        // Monitor Button - Illuminated Amber when ON
         monitorBtn.setClickingTogglesState(true);
         monitorBtn.setToggleState(outputBusRef.getMonitor(), juce::dontSendNotification);
-        monitorBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff064e3b));
-        monitorBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentGreen());
-        monitorBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
-        monitorBtn.setColour(juce::TextButton::textColourOnId, juce::Colour(0xffFFFFFF));
-        monitorBtn.onClick = [this]() { outputBusRef.setMonitor(monitorBtn.getToggleState()); };
+        monitorBtn.setTooltip("Toggle Monitor Listen");
+        monitorBtn.onClick = [this]()
+        {
+            outputBusRef.setMonitor(monitorBtn.getToggleState());
+        };
         addAndMakeVisible(monitorBtn);
     }
 
@@ -116,30 +141,42 @@ namespace dsd
     void OutputBayStrip::resized()
     {
         auto area = getLocalBounds().reduced(4, 4);
-        outputDeviceSelector.setBounds(area.removeFromTop(20));
+
+        // 1. Output Device selector at top
+        outputDeviceSelector.setBounds(area.removeFromTop(22));
+
         area.removeFromTop(4);
-        
+
+        // 2. Bus Name Label
         busNameLabel.setBounds(area.removeFromTop(24));
-        area.removeFromTop(4);
-        
+
+        area.removeFromTop(5);
+
+        // 3. MUTE and MON side by side
         auto btnRow = area.removeFromTop(26);
-        muteBtn.setBounds(btnRow.removeFromLeft(btnRow.getWidth() / 2 - 2));
+        const int halfW = (btnRow.getWidth() - 4) / 2;
+        muteBtn.setBounds(btnRow.removeFromLeft(halfW));
         btnRow.removeFromLeft(4);
         monitorBtn.setBounds(btnRow);
-        area.removeFromTop(8);
-        
+
+        area.removeFromTop(6);
+
+        // 4. Stereo Meter
         stereoMeter.setBounds(area.removeFromTop(120));
-        area.removeFromTop(8);
-        
+
+        area.removeFromTop(6);
+
+        // 5. Output Fader fills remainder
         fader.setBounds(area);
     }
 
     void OutputBayStrip::paint(juce::Graphics& g)
     {
         auto bounds = getLocalBounds().toFloat();
-        g.setColour(juce::Colour(0xffC8CACF));
+        g.setColour(juce::Colour(0xffC6C9CF));
         g.fillRoundedRectangle(bounds, 4.0f);
+
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.drawRoundedRectangle(bounds, 4.0f, 1.2f);
     }
-}
+} // namespace dsd

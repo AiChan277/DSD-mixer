@@ -24,6 +24,8 @@ target_sources(DSDMixer PRIVATE
     Source/Audio/AudioInputSource.h
     Source/Audio/AudioDeviceManager.h
     Source/Audio/AudioDeviceManager.cpp
+    Source/Audio/MultiDeviceManager.h
+    Source/Audio/MultiDeviceManager.cpp
     Source/Audio/AudioEngine.h
     Source/Audio/AudioEngine.cpp
     Source/Scheduler/DSPScheduler.h
@@ -124,6 +126,7 @@ add_executable(AudioEngineTests
     Source/Plugin/PluginManager.cpp
     Source/Session/SessionManager.cpp
     Source/Audio/AudioDeviceManager.cpp
+    Source/Audio/MultiDeviceManager.cpp
 )
 
 target_include_directories(AudioEngineTests PRIVATE
