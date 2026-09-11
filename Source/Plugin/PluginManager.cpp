@@ -246,7 +246,12 @@ namespace dsd
         double sampleRate = 48000.0;
         int blockSize = 128;
 
-        return formatManager.createPluginInstance(desc, sampleRate, blockSize, errorMessage);
+        auto instance = formatManager.createPluginInstance(desc, sampleRate, blockSize, errorMessage);
+        if (instance != nullptr)
+        {
+            instance->setPlayConfigDetails(2, 2, sampleRate, blockSize);
+        }
+        return instance;
     }
 
     std::unique_ptr<juce::AudioPluginInstance> PluginManager::loadPluginFromFile(const juce::File& file,

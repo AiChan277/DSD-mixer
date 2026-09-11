@@ -18,12 +18,23 @@ namespace dsd
         currentSampleRate = sampleRate;
         currentBlockSize = maxBlockSize;
 
+        // Pre-allocate scratch buffer (up to 8 channels for stereo + sidechains / surround)
+        scratchBuffer.setSize(8, std::max(128, maxBlockSize), false, true, true);
+
         for (auto& slot : slots)
         {
             if (slot != nullptr && slot->instance != nullptr)
             {
-                slot->instance->prepareToPlay(sampleRate, maxBlockSize);
-                slot->latencySamples.store(slot->instance->getLatencySamples(), std::memory_order_relaxed);
+                try
+                {
+                    slot->instance->setPlayConfigDetails(2, 2, sampleRate, maxBlockSize);
+                    slot->instance->prepareToPlay(sampleRate, maxBlockSize);
+                    slot->latencySamples.store(std::max(0, slot->instance->getLatencySamples()), std::memory_order_relaxed);
+                }
+                catch (...)
+                {
+                    slot->bypassed.store(true, std::memory_order_relaxed);
+                }
             }
         }
     }
@@ -33,25 +44,31 @@ namespace dsd
         std::lock_guard<std::mutex> lock(rackMutex);
         for (auto& slot : slots)
         {
-            if (slot != nullptr)
+            if (slot != nullptr && slot->instance != nullptr)
             {
-                if (slot->activeEditorWindow != nullptr)
+                try
                 {
-                    slot->activeEditorWindow->setVisible(false);
-                    delete slot->activeEditorWindow.getComponent();
-                }
-                if (slot->instance != nullptr)
                     slot->instance->releaseResources();
+                }
+                catch (...) {}
             }
         }
+        scratchBuffer.setSize(0, 0);
     }
 
-    void PluginRack::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
+    void PluginRack::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/, int numSamples)
     {
+        // If numSamples not specified, use buffer sample count
+        const int actualSamples = (numSamples > 0) ? numSamples : buffer.getNumSamples();
+        if (actualSamples <= 0)
+            return;
+
         // Use try_lock to avoid blocking real-time audio thread if UI is modifying the rack
         std::unique_lock<std::mutex> lock(rackMutex, std::try_to_lock);
         if (!lock.owns_lock())
             return; // Skip plugin processing safely for this single block if locked
+
+        const int bufferChannels = buffer.getNumChannels();
 
         for (auto& slot : slots)
         {
@@ -61,7 +78,64 @@ namespace dsd
             if (slot->bypassed.load(std::memory_order_relaxed))
                 continue;
 
-            slot->instance->processBlock(buffer, midiMessages);
+            auto* plugin = slot->instance.get();
+            const int totalIns = plugin->getTotalNumInputChannels();
+            const int totalOuts = plugin->getTotalNumOutputChannels();
+            const int neededChannels = std::max({ bufferChannels, totalIns, totalOuts });
+
+            // Isolated MIDI buffer per plugin slot to prevent MIDI corruption cascades
+            juce::MidiBuffer slotMidi;
+
+            try
+            {
+                if (neededChannels > bufferChannels)
+                {
+                    // Plugin requires extra channels (e.g. 4 channels for sidechain or surround)
+                    const int allocChans = std::max(8, neededChannels);
+                    const int allocSamples = std::max(currentBlockSize, actualSamples);
+                    if (scratchBuffer.getNumChannels() < allocChans || scratchBuffer.getNumSamples() < allocSamples)
+                    {
+                        scratchBuffer.setSize(allocChans, allocSamples, false, true, true);
+                    }
+
+                    // Copy input channels to scratch buffer
+                    for (int ch = 0; ch < bufferChannels; ++ch)
+                        scratchBuffer.copyFrom(ch, 0, buffer.getReadPointer(ch), actualSamples);
+
+                    // Clear extra channels (sidechain / aux)
+                    for (int ch = bufferChannels; ch < neededChannels; ++ch)
+                        scratchBuffer.clear(ch, 0, actualSamples);
+
+                    juce::AudioBuffer<float> procBuf(scratchBuffer.getArrayOfWritePointers(), neededChannels, actualSamples);
+                    plugin->processBlock(procBuf, slotMidi);
+
+                    // Copy processed stereo output back
+                    for (int ch = 0; ch < bufferChannels; ++ch)
+                        buffer.copyFrom(ch, 0, procBuf.getReadPointer(ch), actualSamples);
+                }
+                else
+                {
+                    // Direct in-place processing with exact actualSamples proxy
+                    juce::AudioBuffer<float> procBuf(buffer.getArrayOfWritePointers(), bufferChannels, actualSamples);
+                    plugin->processBlock(procBuf, slotMidi);
+                }
+
+                // Sanitize audio buffer to prevent NaN / Inf propagation between chained plugins
+                for (int ch = 0; ch < bufferChannels; ++ch)
+                {
+                    float* channelData = buffer.getWritePointer(ch);
+                    for (int s = 0; s < actualSamples; ++s)
+                    {
+                        if (std::isnan(channelData[s]) || std::isinf(channelData[s]))
+                            channelData[s] = 0.0f;
+                    }
+                }
+            }
+            catch (...)
+            {
+                // Silently bypass crashing plugin to maintain console audio stability
+                slot->bypassed.store(true, std::memory_order_relaxed);
+            }
         }
     }
 
@@ -92,12 +166,23 @@ namespace dsd
         if (pluginInstance == nullptr)
             return false;
 
+        // 1. Configure buses for Stereo In / Stereo Out, disabling non-main buses (sidechain/aux)
+        pluginInstance->setPlayConfigDetails(2, 2, currentSampleRate, currentBlockSize);
+
+        try
+        {
+            pluginInstance->prepareToPlay(currentSampleRate, currentBlockSize);
+        }
+        catch (...)
+        {
+            return false;
+        }
+
         std::lock_guard<std::mutex> lock(rackMutex);
-        pluginInstance->prepareToPlay(currentSampleRate, currentBlockSize);
 
         auto slot = std::make_unique<PluginSlot>();
         slot->name = name.isNotEmpty() ? name : pluginInstance->getName();
-        slot->latencySamples.store(pluginInstance->getLatencySamples(), std::memory_order_relaxed);
+        slot->latencySamples.store(std::max(0, pluginInstance->getLatencySamples()), std::memory_order_relaxed);
         slot->instance = std::move(pluginInstance);
 
         slots.push_back(std::move(slot));
@@ -106,19 +191,28 @@ namespace dsd
 
     bool PluginRack::removePlugin(int index)
     {
-        std::lock_guard<std::mutex> lock(rackMutex);
-        if (index >= 0 && index < static_cast<int>(slots.size()))
+        std::unique_ptr<PluginSlot> slotToDelete;
         {
-            if (slots[index]->activeEditorWindow != nullptr)
+            std::lock_guard<std::mutex> lock(rackMutex);
+            if (index >= 0 && index < static_cast<int>(slots.size()))
             {
-                slots[index]->activeEditorWindow->setVisible(false);
-                delete slots[index]->activeEditorWindow.getComponent();
+                slotToDelete = std::move(slots[index]);
+                slots.erase(slots.begin() + index);
+            }
+        }
+
+        if (slotToDelete != nullptr)
+        {
+            if (slotToDelete->activeEditorWindow != nullptr)
+            {
+                slotToDelete->activeEditorWindow->setVisible(false);
+                delete slotToDelete->activeEditorWindow.getComponent();
             }
 
-            if (slots[index]->instance != nullptr)
-                slots[index]->instance->releaseResources();
-
-            slots.erase(slots.begin() + index);
+            if (slotToDelete->instance != nullptr)
+            {
+                try { slotToDelete->instance->releaseResources(); } catch (...) {}
+            }
             return true;
         }
         return false;
@@ -178,7 +272,10 @@ namespace dsd
             setUsingNativeTitleBar(true);
             setContentOwned(editor, true);
             setResizable(editor->isResizable(), false);
-            centreWithSize(editor->getWidth(), editor->getHeight());
+
+            const int w = std::max(200, editor->getWidth());
+            const int h = std::max(150, editor->getHeight());
+            centreWithSize(w, h);
             toFront(true);
             setVisible(true);
         }

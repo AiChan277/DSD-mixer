@@ -27,7 +27,7 @@ namespace dsd
         void prepare(double sampleRate, int maxBlockSize);
         void releaseResources();
 
-        void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages);
+        void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages, int numSamples = -1);
 
         int getNumPlugins() const;
         const PluginSlot* getSlot(int index) const;
@@ -50,6 +50,6 @@ namespace dsd
         double currentSampleRate{48000.0};
         int currentBlockSize{128};
 
-        juce::MidiBuffer emptyMidiBuffer;
+        juce::AudioBuffer<float> scratchBuffer;
     };
 } // namespace dsd

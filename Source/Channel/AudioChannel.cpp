@@ -75,8 +75,11 @@ namespace dsd
 
     void AudioChannel::processBlock(const juce::AudioBuffer<float>& deviceInputBuffer, int numSamples)
     {
-        if (numSamples <= 0 || channelBuffer.getNumSamples() < numSamples)
+        if (numSamples <= 0)
             return;
+
+        if (channelBuffer.getNumSamples() < numSamples)
+            channelBuffer.setSize(2, std::max(currentBlockSize, numSamples), false, true, true);
 
         // 1. Stage A: Input Acquisition
         if (inputSource != nullptr)
@@ -122,7 +125,7 @@ namespace dsd
 
         // 5. Per-Channel VST3 Plugin Rack
         midiBuffer.clear();
-        pluginRack.processBlock(channelBuffer, midiBuffer);
+        pluginRack.processBlock(channelBuffer, midiBuffer, numSamples);
 
         // Meter Stage C (Post-VST)
         meterPostVSTProc.processBlock(channelBuffer.getReadPointer(0),

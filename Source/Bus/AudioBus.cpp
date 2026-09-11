@@ -39,7 +39,7 @@ namespace dsd
 
         // 1. Bus VST3 plugins (e.g. bus glue compressor/limiter)
         midiBuffer.clear();
-        pluginRack.processBlock(busBuffer, midiBuffer);
+        pluginRack.processBlock(busBuffer, midiBuffer, numSamples);
 
         // 2. Bus fader & mute
         const bool isMuted = mute.load(std::memory_order_relaxed);
