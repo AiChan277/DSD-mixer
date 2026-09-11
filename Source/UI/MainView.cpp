@@ -6,13 +6,13 @@ namespace dsd
         : deviceManagerRef(devManager),
           audioEngineRef(audioEngine),
           topBar(devManager, audioEngine),
-          masterStrip(audioEngine.getMasterBus())
+          outputBayPanel(audioEngine.getOutputManager())
     {
         setLookAndFeel(&customLookAndFeel);
 
         addAndMakeVisible(topBar);
 
-        // Instantiate Channel Strips for all channels
+        // Instantiate 16 Channel Strips
         auto& channelMgr = audioEngineRef.getChannelManager();
         const int numChannels = channelMgr.getNumChannels();
 
@@ -27,15 +27,16 @@ namespace dsd
         }
 
         channelsViewport.setViewedComponent(&channelsContainer, false);
-        channelsViewport.setScrollBarsShown(false, true); // show horizontal scrollbar if needed
+        channelsViewport.setScrollBarsShown(false, true); // Show horizontal scrollbar
         addAndMakeVisible(channelsViewport);
 
-        addAndMakeVisible(masterStrip);
+        // Output Bay Panel on the right (4 configurable output strips)
+        addAndMakeVisible(outputBayPanel);
 
-        // Refresh UI at ~45 FPS (approx 22 ms timer interval)
+        // UI Refresh Timer @ 45 Hz
         startTimerHz(45);
 
-        setSize(980, 680);
+        setSize(1360, 720);
     }
 
     MainView::~MainView()
@@ -46,7 +47,6 @@ namespace dsd
 
     void MainView::timerCallback()
     {
-        // Poll lock-free atomics from audio thread
         topBar.updateStats();
 
         for (auto& strip : channelStrips)
@@ -55,31 +55,29 @@ namespace dsd
                 strip->updateMeterFromAudio();
         }
 
-        masterStrip.updateMeterFromAudio();
+        outputBayPanel.updateMeters();
     }
 
     void MainView::resized()
     {
         auto bounds = getLocalBounds();
 
-        // 1. Top status bar
+        // 1. Top Bar
         topBar.setBounds(bounds.removeFromTop(44));
 
-        // Margins for main console surface
-        bounds.reduce(12, 12);
+        bounds.reduce(10, 10);
 
-        // 2. Output Bay (Master Strip on right)
-        const int masterWidth = 140;
-        masterStrip.setBounds(bounds.removeFromRight(masterWidth));
+        // 2. Output Bay Panel on right (4 Output Strips, approx 420 px width)
+        const int outputPanelWidth = 420;
+        outputBayPanel.setBounds(bounds.removeFromRight(outputPanelWidth));
 
-        bounds.removeFromRight(12); // gap between channels and master
+        bounds.removeFromRight(10); // Gap between Input Bay and Output Bay
 
-        // 3. Input Bay (Channels Viewport on left)
+        // 3. Input Bay Viewport on left
         channelsViewport.setBounds(bounds);
 
-        // Calculate layout of channels container
-        const int stripWidth = 130;
-        const int stripGap = 8;
+        const int stripWidth = 118;
+        const int stripGap = 6;
         const int numStrips = static_cast<int>(channelStrips.size());
         const int totalWidth = numStrips * stripWidth + (numStrips - 1) * stripGap;
 
@@ -98,7 +96,6 @@ namespace dsd
 
     void MainView::paint(juce::Graphics& g)
     {
-        // Dark metallic console body
         g.fillAll(DSDLookAndFeel::getConsoleDarkBg());
     }
 } // namespace dsd

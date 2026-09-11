@@ -12,8 +12,8 @@ namespace dsd
         setContentOwned(new MainView(devManager, audioEngine), true);
 
         setResizable(true, true);
-        setResizeLimits(760, 580, 2560, 1600);
-        centreWithSize(getWidth(), getHeight());
+        setResizeLimits(1024, 600, 3840, 2160);
+        centreWithSize(1360, 720);
         setVisible(true);
     }
 

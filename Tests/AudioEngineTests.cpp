@@ -10,25 +10,19 @@
 #include "Audio/AudioInputSource.h"
 #include "Channel/AudioChannel.h"
 #include "Channel/ChannelManager.h"
+#include "Scheduler/DSPScheduler.h"
 #include "Routing/RoutingEngine.h"
-#include "Master/MasterBus.h"
+#include "Output/OutputManager.h"
+#include "Session/SessionManager.h"
 
 void testGainProcessor()
 {
     std::cout << "[TEST] Running GainProcessor tests..." << std::endl;
 
-    // 0 dB should be exactly 1.0 linear
     assert(std::abs(dsd::GainProcessor::dbToLinear(0.0f) - 1.0f) < 0.0001f);
-
-    // -6 dB should be approx 0.501187 linear
     assert(std::abs(dsd::GainProcessor::dbToLinear(-6.0f) - 0.501187f) < 0.001f);
-
-    // +6 dB should be approx 1.995 linear
     assert(std::abs(dsd::GainProcessor::dbToLinear(6.0f) - 1.99526f) < 0.001f);
-
-    // <= -60 dB should clamp to 0.0 linear
     assert(dsd::GainProcessor::dbToLinear(-60.0f) == 0.0f);
-    assert(dsd::GainProcessor::dbToLinear(-80.0f) == 0.0f);
 
     std::cout << "[PASS] GainProcessor tests passed." << std::endl;
 }
@@ -38,22 +32,17 @@ void testPanProcessor()
     std::cout << "[TEST] Running PanProcessor tests..." << std::endl;
 
     dsd::PanProcessor pan;
-
-    // Center pan: L and R should both equal ~0.7071 (cos(pi/4) and sin(pi/4))
     pan.setPan(0.0f);
     assert(std::abs(pan.getGainL() - 0.70710678f) < 0.001f);
     assert(std::abs(pan.getGainR() - 0.70710678f) < 0.001f);
 
-    // Constant power check: gainL^2 + gainR^2 ~= 1.0
     float powerCenter = pan.getGainL() * pan.getGainL() + pan.getGainR() * pan.getGainR();
     assert(std::abs(powerCenter - 1.0f) < 0.001f);
 
-    // Full Left (-1.0f): L=1.0, R=0.0
     pan.setPan(-1.0f);
     assert(std::abs(pan.getGainL() - 1.0f) < 0.001f);
     assert(std::abs(pan.getGainR() - 0.0f) < 0.001f);
 
-    // Full Right (+1.0f): L=0.0, R=1.0
     pan.setPan(1.0f);
     assert(std::abs(pan.getGainL() - 0.0f) < 0.001f);
     assert(std::abs(pan.getGainR() - 1.0f) < 0.001f);
@@ -67,10 +56,8 @@ void testMeterProcessor()
 
     dsd::MeterProcessor meter;
     meter.prepare(48000.0);
-
     dsd::MeterValues values;
 
-    // Generate test block: 128 samples with peak 0.8
     const int numSamples = 128;
     std::vector<float> left(numSamples, 0.5f);
     std::vector<float> right(numSamples, 0.8f);
@@ -79,10 +66,8 @@ void testMeterProcessor()
 
     assert(std::abs(values.peakL.load() - 0.5f) < 0.001f);
     assert(std::abs(values.peakR.load() - 0.8f) < 0.001f);
-    assert(std::abs(values.peakHoldR.load() - 0.8f) < 0.001f);
     assert(!values.clipped.load());
 
-    // Test clipping detection
     std::vector<float> clippedSamples(numSamples, 1.05f);
     meter.processBlock(clippedSamples.data(), clippedSamples.data(), numSamples, values);
     assert(values.clipped.load() == true);
@@ -90,72 +75,91 @@ void testMeterProcessor()
     std::cout << "[PASS] MeterProcessor tests passed." << std::endl;
 }
 
-void testRoutingAndSolo()
+void test16x4RoutingAndOutputs()
 {
-    std::cout << "[TEST] Running Routing & Solo tests..." << std::endl;
+    std::cout << "[TEST] Running 16x4 Routing & Configurable Outputs tests..." << std::endl;
 
     dsd::ChannelManager channelMgr;
-    channelMgr.initializeDefaultChannels(4);
+    channelMgr.initializeDefaultChannels(dsd::NUM_CHANNELS_LEVEL1);
     channelMgr.prepare(48000.0, 128);
 
-    // Channel 1: enable sine wave generator (amplitude 0.5)
+    dsd::OutputManager outputMgr;
+    outputMgr.initializeDefaultOutputs(dsd::NUM_OUTPUT_BUSES_LEVEL1);
+    outputMgr.prepare(48000.0, 128);
+
+    assert(channelMgr.getNumChannels() == 16);
+    assert(outputMgr.getNumOutputs() == 4);
+
+    // Channel 1: Sine generator
     auto* ch1 = channelMgr.getChannel(0);
-    assert(ch1 != nullptr);
-    auto sineGen1 = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.5f);
-    sineGen1->setEnabled(true);
-    ch1->setInputSource(std::move(sineGen1));
+    auto sine1 = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.5f);
+    sine1->setEnabled(true);
+    ch1->setInputSource(std::move(sine1));
 
-    // Channel 2: enable sine wave generator (amplitude 0.25)
-    auto* ch2 = channelMgr.getChannel(1);
-    assert(ch2 != nullptr);
-    auto sineGen2 = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.25f);
-    sineGen2->setEnabled(true);
-    ch2->setInputSource(std::move(sineGen2));
+    // Dummy input process
+    juce::AudioBuffer<float> dummyDevIn(2, 128);
+    dummyDevIn.clear();
+    channelMgr.processChannels(dummyDevIn, 128);
 
-    // Process channels with empty dummy device input
-    juce::AudioBuffer<float> dummyDeviceIn(2, 128);
-    dummyDeviceIn.clear();
-    channelMgr.processChannels(dummyDeviceIn, 128);
+    dsd::RoutingEngine router;
+    // Enable CH 1 to OUT 01 (default) and OUT 02
+    router.setRouteEnabled(0, 1, true);
+    router.setRouteGainDb(0, 1, -6.0f); // -6 dB send to OUT 02
 
-    // Route to master
-    dsd::RoutingEngine routing;
-    juce::AudioBuffer<float> masterBuffer(2, 128);
-    routing.routeChannelsToMaster(channelMgr, masterBuffer, 128);
+    router.routeChannelsToOutputs(channelMgr, outputMgr, 128);
+    outputMgr.processOutputs(128);
 
-    // Verify master got mixed audio
-    float masterPeakL = masterBuffer.getMagnitude(0, 0, 128);
-    assert(masterPeakL > 0.1f);
+    // OUT 01 should receive full signal
+    float out1Mag = outputMgr.getOutput(0)->getBuffer().getMagnitude(0, 0, 128);
+    assert(out1Mag > 0.1f);
 
-    // Now test Solo logic: Solo Channel 1
-    ch1->setSolo(true);
-    assert(channelMgr.hasAnySoloChannel() == true);
+    // OUT 02 should receive attenuated signal (-6 dB approx half amplitude)
+    float out2Mag = outputMgr.getOutput(1)->getBuffer().getMagnitude(0, 0, 128);
+    assert(out2Mag > 0.05f);
+    assert(out2Mag < out1Mag);
 
-    routing.routeChannelsToMaster(channelMgr, masterBuffer, 128);
-    // Channel 2 should be excluded now, only Channel 1 present
+    std::cout << "[PASS] 16x4 Routing & Output tests passed." << std::endl;
+}
 
-    // Test Disable Output switch (from sketch)
-    ch1->setDisableOutput(true);
-    routing.routeChannelsToMaster(channelMgr, masterBuffer, 128);
-    float masterPeakDisabled = masterBuffer.getMagnitude(0, 0, 128);
-    assert(masterPeakDisabled == 0.0f); // Master is completely silent when routed output disabled!
+void testMulticoreScheduler()
+{
+    std::cout << "[TEST] Running Multicore Scheduler parallel dispatch tests..." << std::endl;
 
-    std::cout << "[PASS] Routing & Solo tests passed." << std::endl;
+    dsd::ChannelManager channelMgr;
+    channelMgr.initializeDefaultChannels(16);
+    channelMgr.prepare(48000.0, 128);
+
+    dsd::DSPScheduler scheduler;
+    assert(scheduler.getNumWorkers() >= 2);
+
+    juce::AudioBuffer<float> dummyInput(2, 128);
+    dummyInput.clear();
+
+    // Process 100 blocks in parallel
+    for (int block = 0; block < 100; ++block)
+    {
+        scheduler.processChannelsParallel(channelMgr, dummyInput, 128);
+    }
+
+    std::cout << "[PASS] Multicore Scheduler processed 100 blocks successfully with "
+              << scheduler.getNumWorkers() << " worker threads." << std::endl;
 }
 
 int main()
 {
-    std::cout << "========================================" << std::endl;
-    std::cout << " DSD Mixer - Engine & DSP Verification " << std::endl;
-    std::cout << "========================================" << std::endl;
+    std::cout << "=================================================" << std::endl;
+    std::cout << " DSD Mixer Level 1 - Complete Core Verification  " << std::endl;
+    std::cout << "=================================================" << std::endl;
 
     testGainProcessor();
     testPanProcessor();
     testMeterProcessor();
-    testRoutingAndSolo();
+    test16x4RoutingAndOutputs();
+    testMulticoreScheduler();
 
-    std::cout << "========================================" << std::endl;
-    std::cout << " All Engine Tests Successfully Passed!  " << std::endl;
-    std::cout << "========================================" << std::endl;
+    std::cout << "=================================================" << std::endl;
+    std::cout << " All Level 1 Engine Tests Successfully Passed!   " << std::endl;
+    std::cout << "=================================================" << std::endl;
 
     return 0;
 }

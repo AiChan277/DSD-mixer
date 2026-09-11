@@ -4,7 +4,7 @@ namespace dsd
 {
     ChannelManager::ChannelManager()
     {
-        initializeDefaultChannels(NUM_CHANNELS_MVP);
+        initializeDefaultChannels(NUM_CHANNELS_LEVEL1);
     }
 
     void ChannelManager::initializeDefaultChannels(int count)
@@ -13,16 +13,17 @@ namespace dsd
         channels.reserve(count);
 
         const std::string defaultNames[] = {
-            "MIC 01", "DISCORD", "CHROME", "GAME",
-            "LINE IN", "VIRTUAL", "AUX 1", "AUX 2"
+            "MIC 01", "MIC 02", "DISCORD", "CHROME",
+            "GAME",   "SPOTIFY", "LINE IN 1", "LINE IN 2",
+            "VIRTUAL 1", "VIRTUAL 2", "MEDIA", "SYSTEM",
+            "AUX 1",  "AUX 2",  "TALKBACK", "FX RETURN"
         };
 
         for (int i = 0; i < count; ++i)
         {
-            std::string name = (i < 8) ? defaultNames[i] : ("CH " + std::to_string(i + 1));
+            std::string name = (i < 16) ? defaultNames[i] : ("CH " + std::to_string(i + 1));
             auto channel = std::make_unique<AudioChannel>(i + 1, name);
-            // Default input channel mapping: CH1 -> Dev 0/1, CH2 -> Dev 0/1, etc.
-            // On MiniFuse or stereo device, maps stereo 0/1
+            // Default hardware input assignment
             channel->setInputSource(std::make_unique<HardwareInputSource>(0, 1));
             channels.push_back(std::move(channel));
         }

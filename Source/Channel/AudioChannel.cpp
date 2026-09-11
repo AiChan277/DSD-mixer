@@ -5,13 +5,11 @@ namespace dsd
     AudioChannel::AudioChannel(ChannelID id, const std::string& channelName)
         : channelID(id), name(channelName)
     {
-        // Default hardware mapping: CH 1 uses input 0/1, CH 2 uses 0/1 or mono 1, etc.
         inputSource = std::make_unique<HardwareInputSource>(0, 1);
     }
 
     void AudioChannel::prepare(double sampleRate, int maxBlockSize)
     {
-        // Preallocate 2-channel stereo buffer for the channel
         channelBuffer.setSize(2, maxBlockSize, false, true, true);
         channelBuffer.clear();
 
@@ -23,6 +21,8 @@ namespace dsd
 
         meterProcessor.prepare(sampleRate);
 
+        pluginRack.prepare(sampleRate, maxBlockSize);
+
         if (inputSource != nullptr)
             inputSource->prepare(sampleRate, maxBlockSize);
     }
@@ -31,6 +31,8 @@ namespace dsd
     {
         channelBuffer.setSize(0, 0);
         meterProcessor.reset();
+        pluginRack.releaseResources();
+
         if (inputSource != nullptr)
             inputSource->releaseResources();
     }
@@ -63,33 +65,53 @@ namespace dsd
         if (numSamples <= 0 || channelBuffer.getNumSamples() < numSamples)
             return;
 
-        // 1. Input acquisition into preallocated channelBuffer
+        // 1. Input Acquisition
         if (inputSource != nullptr)
-        {
             inputSource->readBlock(channelBuffer, deviceInputBuffer, numSamples);
-        }
         else
-        {
             channelBuffer.clear(0, numSamples);
+
+        // 2. Phase Invert
+        if (phaseInvert.load(std::memory_order_relaxed))
+        {
+            channelBuffer.applyGain(0, 0, numSamples, -1.0f);
+            channelBuffer.applyGain(1, 0, numSamples, -1.0f);
         }
 
-        // 2. Gain Stage
+        // 3. Force Mono (sum left & right)
+        if (forceMono.load(std::memory_order_relaxed))
+        {
+            float* l = channelBuffer.getWritePointer(0);
+            float* r = channelBuffer.getWritePointer(1);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float mono = (l[i] + r[i]) * 0.5f;
+                l[i] = mono;
+                r[i] = mono;
+            }
+        }
+
+        // 4. Pre-fader Gain Stage
         gainProcessor.setTargetGainDb(gainDb.load(std::memory_order_relaxed));
         gainProcessor.processBlock(channelBuffer.getArrayOfWritePointers(), 2, numSamples);
 
-        // 3. Pan Processing
+        // 5. Per-Channel VST3 Plugin Rack
+        midiBuffer.clear();
+        pluginRack.processBlock(channelBuffer, midiBuffer);
+
+        // 6. Constant-power Pan Processing
         panProcessor.setPan(pan.load(std::memory_order_relaxed));
         panProcessor.processStereo(channelBuffer.getWritePointer(0),
                                    channelBuffer.getWritePointer(1),
                                    numSamples);
 
-        // 4. Fader & Mute Processing
+        // 7. Post-fader Gain & Mute Processing
         const bool isMuted = mute.load(std::memory_order_relaxed);
         const float targetFader = isMuted ? -60.0f : faderDb.load(std::memory_order_relaxed);
         faderProcessor.setTargetGainDb(targetFader);
         faderProcessor.processBlock(channelBuffer.getArrayOfWritePointers(), 2, numSamples);
 
-        // 5. Meter calculation on processed audio
+        // 8. Meter Processing (Peak, RMS, Peak Hold, Clip)
         meterProcessor.processBlock(channelBuffer.getReadPointer(0),
                                     channelBuffer.getReadPointer(1),
                                     numSamples,

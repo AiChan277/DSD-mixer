@@ -11,8 +11,11 @@ namespace dsd
 
     constexpr double DEFAULT_SAMPLE_RATE = 48000.0;
     constexpr int DEFAULT_BUFFER_SIZE = 128;
-    constexpr int NUM_CHANNELS_MVP = 4;
-    constexpr int NUM_MASTER_CHANNELS = 2; // Stereo
+
+    // DSD Mixer Level 1 Specifications
+    constexpr int NUM_CHANNELS_LEVEL1 = 16;
+    constexpr int NUM_OUTPUT_BUSES_LEVEL1 = 4;
+    constexpr int NUM_SUBMIX_BUSES = 4;
 
     constexpr float MIN_GAIN_DB = -60.0f;
     constexpr float MAX_GAIN_DB = 24.0f;
@@ -35,6 +38,19 @@ namespace dsd
         }
     };
 
+    struct RouteMatrixCell
+    {
+        std::atomic<float> sendGainDb{0.0f}; // 0 dB default send level
+        std::atomic<float> sendPan{0.0f};    // Center
+        std::atomic<bool>  enabled{false};   // Route enabled flag
+    };
+
+    struct WorkerThreadStats
+    {
+        std::atomic<float> cpuLoadPercent{0.0f};
+        std::atomic<uint32_t> blocksProcessed{0};
+    };
+
     struct EnginePerformanceStats
     {
         std::atomic<float> cpuLoadPercent{0.0f};
@@ -42,5 +58,6 @@ namespace dsd
         std::atomic<double> deadlineMs{2.67};
         std::atomic<uint64_t> xrunCount{0};
         std::atomic<bool> isGlitching{false};
+        std::atomic<int> activeWorkersCount{0};
     };
 } // namespace dsd

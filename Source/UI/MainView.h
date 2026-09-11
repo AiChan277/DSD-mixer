@@ -5,7 +5,7 @@
 #include "Audio/AudioEngine.h"
 #include "UI/TopBar.h"
 #include "UI/ChannelStrip.h"
-#include "UI/MasterStrip.h"
+#include "UI/OutputBayPanel.h"
 #include "UI/DSDLookAndFeel.h"
 #include <vector>
 #include <memory>
@@ -31,7 +31,7 @@ namespace dsd
 
         TopBar topBar;
         std::vector<std::unique_ptr<ChannelStrip>> channelStrips;
-        MasterStrip masterStrip;
+        OutputBayPanel outputBayPanel;
 
         juce::Viewport channelsViewport;
         juce::Component channelsContainer;

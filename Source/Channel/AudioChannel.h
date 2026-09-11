@@ -6,6 +6,7 @@
 #include "DSP/GainProcessor.h"
 #include "DSP/PanProcessor.h"
 #include "DSP/MeterProcessor.h"
+#include "Plugin/PluginRack.h"
 #include <memory>
 #include <string>
 #include <atomic>
@@ -23,7 +24,6 @@ namespace dsd
 
         void processBlock(const juce::AudioBuffer<float>& deviceInputBuffer, int numSamples);
 
-        // Channel Properties
         ChannelID getChannelID() const noexcept { return channelID; }
         std::string getName() const { return name; }
         void setName(const std::string& newName) { name = newName; }
@@ -50,14 +50,21 @@ namespace dsd
         void setDisableOutput(bool dis) noexcept { disableOutput.store(dis, std::memory_order_relaxed); }
         bool getDisableOutput() const noexcept { return disableOutput.load(std::memory_order_relaxed); }
 
+        void setPhaseInvert(bool invert) noexcept { phaseInvert.store(invert, std::memory_order_relaxed); }
+        bool getPhaseInvert() const noexcept { return phaseInvert.load(std::memory_order_relaxed); }
+
+        void setForceMono(bool mono) noexcept { forceMono.store(mono, std::memory_order_relaxed); }
+        bool getForceMono() const noexcept { return forceMono.load(std::memory_order_relaxed); }
+
         void setInputSource(std::unique_ptr<AudioInputSource> source);
         AudioInputSource* getInputSource() const noexcept { return inputSource.get(); }
 
-        // Meter access
+        PluginRack& getPluginRack() noexcept { return pluginRack; }
+        const PluginRack& getPluginRack() const noexcept { return pluginRack; }
+
         MeterValues& getMeterValues() noexcept { return meterValues; }
         const MeterValues& getMeterValues() const noexcept { return meterValues; }
 
-        // Audio Buffer access for Routing Engine
         const juce::AudioBuffer<float>& getOutputBuffer() const noexcept { return channelBuffer; }
 
     private:
@@ -71,20 +78,19 @@ namespace dsd
         std::atomic<bool> solo{false};
         std::atomic<bool> directMonitor{false};
         std::atomic<bool> disableOutput{false};
+        std::atomic<bool> phaseInvert{false};
+        std::atomic<bool> forceMono{false};
 
-        // DSP Processors
         GainProcessor gainProcessor;
         GainProcessor faderProcessor;
         PanProcessor panProcessor;
         MeterProcessor meterProcessor;
 
-        // Input abstraction
+        PluginRack pluginRack;
+
         std::unique_ptr<AudioInputSource> inputSource;
-
-        // Channel buffer (Stereo, preallocated)
         juce::AudioBuffer<float> channelBuffer;
-
-        // Meter atomic values
+        juce::MidiBuffer midiBuffer;
         MeterValues meterValues;
     };
 } // namespace dsd

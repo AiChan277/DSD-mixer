@@ -1,5 +1,8 @@
 #include "UI/TopBar.h"
 #include "UI/DSDLookAndFeel.h"
+#include "UI/RoutingMatrixDialog.h"
+#include "UI/PerformanceMonitorDialog.h"
+#include "Session/SessionManager.h"
 #include <juce_audio_utils/juce_audio_utils.h>
 
 namespace dsd
@@ -8,8 +11,8 @@ namespace dsd
         : deviceManagerRef(devManager), audioEngineRef(audioEngine)
     {
         // 1. Logo & App Title
-        titleLabel.setText("DSD MIXER", juce::dontSendNotification);
-        titleLabel.setFont(juce::FontOptions(15.0f, juce::Font::bold));
+        titleLabel.setText("DSD MIXER — LEVEL 1", juce::dontSendNotification);
+        titleLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
         titleLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
         addAndMakeVisible(titleLabel);
 
@@ -18,7 +21,26 @@ namespace dsd
         settingsBtn.onClick = [this]() { openAudioSettingsDialog(); };
         addAndMakeVisible(settingsBtn);
 
-        // 3. Sample Rate Display
+        // 3. Routing Matrix Button
+        matrixBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getAccentBlue());
+        matrixBtn.onClick = [this]() { openRoutingMatrixDialog(); };
+        addAndMakeVisible(matrixBtn);
+
+        // 4. Performance Monitor Button
+        perfBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
+        perfBtn.onClick = [this]() { openPerformanceDialog(); };
+        addAndMakeVisible(perfBtn);
+
+        // 5. Session Save / Load
+        saveSessionBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d3139));
+        saveSessionBtn.onClick = [this]() { onSaveSessionClicked(); };
+        addAndMakeVisible(saveSessionBtn);
+
+        loadSessionBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d3139));
+        loadSessionBtn.onClick = [this]() { onLoadSessionClicked(); };
+        addAndMakeVisible(loadSessionBtn);
+
+        // 6. Technical Readouts
         sampleRateLabel.setText("48000 Hz", juce::dontSendNotification);
         sampleRateLabel.setJustificationType(juce::Justification::centred);
         sampleRateLabel.setFont(juce::FontOptions(11.0f));
@@ -26,7 +48,6 @@ namespace dsd
         sampleRateLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
         addAndMakeVisible(sampleRateLabel);
 
-        // 4. Buffer Size Display
         bufferSizeLabel.setText("128 smp (2.67 ms)", juce::dontSendNotification);
         bufferSizeLabel.setJustificationType(juce::Justification::centred);
         bufferSizeLabel.setFont(juce::FontOptions(11.0f));
@@ -34,7 +55,6 @@ namespace dsd
         bufferSizeLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
         addAndMakeVisible(bufferSizeLabel);
 
-        // 5. Real-Time Engine Status Badge ("AUDIO OK" / "GLITCH")
         engineStatusBadge.setText("AUDIO OK", juce::dontSendNotification);
         engineStatusBadge.setJustificationType(juce::Justification::centred);
         engineStatusBadge.setFont(juce::FontOptions(11.0f, juce::Font::bold));
@@ -43,7 +63,6 @@ namespace dsd
         engineStatusBadge.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentGreen());
         addAndMakeVisible(engineStatusBadge);
 
-        // 6. CPU Load Readout
         cpuLoadLabel.setText("DSP: 0.0%", juce::dontSendNotification);
         cpuLoadLabel.setJustificationType(juce::Justification::centred);
         cpuLoadLabel.setFont(juce::FontOptions(11.0f));
@@ -56,11 +75,11 @@ namespace dsd
     {
         auto selector = std::make_unique<juce::AudioDeviceSelectorComponent>(
             deviceManagerRef.getJuceManager(),
-            1, 2,  // min/max input channels
-            1, 2,  // min/max output channels
+            1, 16,  // min/max input channels
+            1, 8,   // min/max output channels
             false, false, false, false);
 
-        selector->setSize(500, 420);
+        selector->setSize(520, 440);
 
         juce::DialogWindow::LaunchOptions opts;
         opts.content.setOwned(selector.release());
@@ -74,6 +93,85 @@ namespace dsd
         opts.launchAsync();
     }
 
+    void TopBar::openRoutingMatrixDialog()
+    {
+        auto dlg = std::make_unique<RoutingMatrixDialog>(audioEngineRef.getRoutingEngine(),
+                                                        audioEngineRef.getChannelManager(),
+                                                        audioEngineRef.getOutputManager());
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(dlg.release());
+        opts.dialogTitle = "DSD Mixer - 16x4 Routing Matrix";
+        opts.componentToCentreAround = this;
+        opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = true;
+        opts.resizable = true;
+
+        opts.launchAsync();
+    }
+
+    void TopBar::openPerformanceDialog()
+    {
+        auto dlg = std::make_unique<PerformanceMonitorDialog>(audioEngineRef);
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(dlg.release());
+        opts.dialogTitle = "DSD Mixer - Multicore Performance Monitor";
+        opts.componentToCentreAround = this;
+        opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = true;
+        opts.resizable = true;
+
+        opts.launchAsync();
+    }
+
+    void TopBar::onSaveSessionClicked()
+    {
+        auto chooser = std::make_shared<juce::FileChooser>("Save DSD Mixer Session",
+                                                            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                                                            "*.dsd");
+        chooser->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+            [this, chooser](const juce::FileChooser& fc)
+            {
+                auto file = fc.getResult();
+                if (file != juce::File())
+                {
+                    if (file.getFileExtension() != ".dsd")
+                        file = file.withFileExtension("dsd");
+
+                    bool success = SessionManager::saveSessionToFile(file, audioEngineRef, deviceManagerRef);
+                    if (success)
+                    {
+                        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Session Saved",
+                            "Session saved to " + file.getFileName(), "OK");
+                    }
+                }
+            });
+    }
+
+    void TopBar::onLoadSessionClicked()
+    {
+        auto chooser = std::make_shared<juce::FileChooser>("Load DSD Mixer Session",
+                                                            juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                                                            "*.dsd");
+        chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+            [this, chooser](const juce::FileChooser& fc)
+            {
+                auto file = fc.getResult();
+                if (file.existsAsFile())
+                {
+                    bool success = SessionManager::loadSessionFromFile(file, audioEngineRef, deviceManagerRef);
+                    if (success)
+                    {
+                        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Session Loaded",
+                            "Session loaded from " + file.getFileName(), "OK");
+                    }
+                }
+            });
+    }
+
     void TopBar::updateStats()
     {
         const auto& stats = audioEngineRef.getPerformanceStats();
@@ -83,10 +181,7 @@ namespace dsd
         const uint64_t xruns = stats.xrunCount.load(std::memory_order_relaxed);
         const bool glitch = stats.isGlitching.load(std::memory_order_relaxed);
 
-        currentCpuPercent = std::clamp(cpu, 0.0f, 100.0f);
-
-        // Update Labels
-        cpuLoadLabel.setText(juce::String::formatted("DSP: %.1f%% (%.2f/%.2f ms)", cpu, procMs, deadMs), juce::dontSendNotification);
+        cpuLoadLabel.setText(juce::String::formatted("DSP: %.1f%% (%.2f ms)", cpu, procMs), juce::dontSendNotification);
 
         const double sr = deviceManagerRef.getCurrentSampleRate();
         const int bs = deviceManagerRef.getCurrentBufferSize();
@@ -115,33 +210,42 @@ namespace dsd
     {
         auto bounds = getLocalBounds().reduced(8, 6);
 
-        titleLabel.setBounds(bounds.removeFromLeft(120));
-        bounds.removeFromLeft(12);
+        titleLabel.setBounds(bounds.removeFromLeft(160));
+        bounds.removeFromLeft(10);
 
-        settingsBtn.setBounds(bounds.removeFromLeft(120));
-        bounds.removeFromLeft(8);
-
-        sampleRateLabel.setBounds(bounds.removeFromLeft(80));
+        settingsBtn.setBounds(bounds.removeFromLeft(105));
         bounds.removeFromLeft(6);
 
-        bufferSizeLabel.setBounds(bounds.removeFromLeft(130));
+        matrixBtn.setBounds(bounds.removeFromLeft(125));
+        bounds.removeFromLeft(6);
+
+        perfBtn.setBounds(bounds.removeFromLeft(110));
+        bounds.removeFromLeft(6);
+
+        saveSessionBtn.setBounds(bounds.removeFromLeft(85));
+        bounds.removeFromLeft(4);
+
+        loadSessionBtn.setBounds(bounds.removeFromLeft(85));
         bounds.removeFromLeft(10);
 
-        engineStatusBadge.setBounds(bounds.removeFromLeft(100));
-        bounds.removeFromLeft(10);
+        sampleRateLabel.setBounds(bounds.removeFromLeft(75));
+        bounds.removeFromLeft(6);
 
-        cpuLoadLabel.setBounds(bounds.removeFromLeft(160));
+        bufferSizeLabel.setBounds(bounds.removeFromLeft(120));
+        bounds.removeFromLeft(8);
+
+        engineStatusBadge.setBounds(bounds.removeFromLeft(95));
+        bounds.removeFromLeft(8);
+
+        cpuLoadLabel.setBounds(bounds.removeFromLeft(140));
     }
 
     void TopBar::paint(juce::Graphics& g)
     {
         auto bounds = getLocalBounds().toFloat();
-
-        // Top bar panel background
         g.setColour(DSDLookAndFeel::getConsolePanelBg());
         g.fillRect(bounds);
 
-        // Bottom separator border
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.fillRect(0.0f, bounds.getBottom() - 1.0f, bounds.getWidth(), 1.0f);
     }

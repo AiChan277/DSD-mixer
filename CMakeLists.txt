@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(DSDMixer VERSION 0.1.0 LANGUAGES C CXX)
+project(DSDMixer VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,7 +11,7 @@ add_subdirectory(JUCE)
 
 juce_add_gui_app(DSDMixer
     PRODUCT_NAME "DSD Mixer"
-    VERSION "0.1.0"
+    VERSION "1.0.0"
     COMPANY_NAME "DSD Audio"
     BUNDLE_ID "com.dsd.mixer"
 )
@@ -26,6 +26,8 @@ target_sources(DSDMixer PRIVATE
     Source/Audio/AudioDeviceManager.cpp
     Source/Audio/AudioEngine.h
     Source/Audio/AudioEngine.cpp
+    Source/Scheduler/DSPScheduler.h
+    Source/Scheduler/DSPScheduler.cpp
     Source/DSP/GainProcessor.h
     Source/DSP/PanProcessor.h
     Source/DSP/MeterProcessor.h
@@ -36,8 +38,20 @@ target_sources(DSDMixer PRIVATE
     Source/Channel/ChannelManager.cpp
     Source/Routing/RoutingEngine.h
     Source/Routing/RoutingEngine.cpp
-    Source/Master/MasterBus.h
-    Source/Master/MasterBus.cpp
+    Source/Bus/AudioBus.h
+    Source/Bus/AudioBus.cpp
+    Source/Bus/BusManager.h
+    Source/Bus/BusManager.cpp
+    Source/Output/OutputBus.h
+    Source/Output/OutputBus.cpp
+    Source/Output/OutputManager.h
+    Source/Output/OutputManager.cpp
+    Source/Plugin/PluginRack.h
+    Source/Plugin/PluginRack.cpp
+    Source/Plugin/PluginManager.h
+    Source/Plugin/PluginManager.cpp
+    Source/Session/SessionManager.h
+    Source/Session/SessionManager.cpp
     Source/UI/DSDLookAndFeel.h
     Source/UI/DSDLookAndFeel.cpp
     Source/UI/MeterComponent.h
@@ -46,8 +60,16 @@ target_sources(DSDMixer PRIVATE
     Source/UI/FaderComponent.cpp
     Source/UI/ChannelStrip.h
     Source/UI/ChannelStrip.cpp
-    Source/UI/MasterStrip.h
-    Source/UI/MasterStrip.cpp
+    Source/UI/OutputBayStrip.h
+    Source/UI/OutputBayStrip.cpp
+    Source/UI/OutputBayPanel.h
+    Source/UI/OutputBayPanel.cpp
+    Source/UI/RoutingMatrixDialog.h
+    Source/UI/RoutingMatrixDialog.cpp
+    Source/UI/PerformanceMonitorDialog.h
+    Source/UI/PerformanceMonitorDialog.cpp
+    Source/UI/PluginRackDialog.h
+    Source/UI/PluginRackDialog.cpp
     Source/UI/TopBar.h
     Source/UI/TopBar.cpp
     Source/UI/MainView.h
@@ -68,6 +90,8 @@ target_compile_definitions(DSDMixer PRIVATE
     JUCE_DIRECTSOUND=1
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_REPORT_APP_USAGE=0
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_AU=0
 )
 
 target_link_libraries(DSDMixer PRIVATE
@@ -84,21 +108,35 @@ target_link_libraries(DSDMixer PRIVATE
     juce::juce_audio_utils
 )
 
-# Test target for automated DSP & engine verification
+# Automated test target for DSP, 16x4 routing, and multicore engine
 add_executable(AudioEngineTests
     Tests/AudioEngineTests.cpp
     Source/DSP/MeterProcessor.cpp
     Source/Channel/AudioChannel.cpp
     Source/Channel/ChannelManager.cpp
+    Source/Scheduler/DSPScheduler.cpp
     Source/Routing/RoutingEngine.cpp
-    Source/Master/MasterBus.cpp
+    Source/Bus/AudioBus.cpp
+    Source/Bus/BusManager.cpp
+    Source/Output/OutputBus.cpp
+    Source/Output/OutputManager.cpp
+    Source/Plugin/PluginRack.cpp
+    Source/Plugin/PluginManager.cpp
+    Source/Session/SessionManager.cpp
 )
 
 target_include_directories(AudioEngineTests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Source
 )
 
+target_compile_definitions(AudioEngineTests PRIVATE
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_AU=0
+)
+
 target_link_libraries(AudioEngineTests PRIVATE
     juce::juce_core
+    juce::juce_data_structures
     juce::juce_audio_basics
+    juce::juce_audio_processors
 )

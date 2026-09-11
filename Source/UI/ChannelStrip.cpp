@@ -1,12 +1,13 @@
 #include "UI/ChannelStrip.h"
 #include "UI/DSDLookAndFeel.h"
+#include "UI/PluginRackDialog.h"
 #include "DSP/GainProcessor.h"
 
 namespace dsd
 {
     ChannelStrip::ChannelStrip(AudioChannel& channel)
         : channelRef(channel),
-          topMeter(false) // mono meter for channel display
+          topMeter(false)
     {
         // 1. Channel Number Badge
         chNumberBadge.setText(juce::String::formatted("CH %02d", channelRef.getChannelID()), juce::dontSendNotification);
@@ -18,7 +19,7 @@ namespace dsd
         addAndMakeVisible(chNumberBadge);
 
         // 2. dBFS Numerical readout
-        dbfsReadout.setText("-inf", juce::dontSendNotification);
+        dbfsReadout.setText("-oo", juce::dontSendNotification);
         dbfsReadout.setJustificationType(juce::Justification::centred);
         dbfsReadout.setFont(juce::FontOptions(10.0f));
         dbfsReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterGreen());
@@ -45,11 +46,11 @@ namespace dsd
         // 6. Channel Name Bottom Label
         channelNameLabel.setText(channelRef.getName(), juce::dontSendNotification);
         channelNameLabel.setJustificationType(juce::Justification::centred);
-        channelNameLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        channelNameLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         channelNameLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
         channelNameLabel.setColour(juce::Label::outlineColourId, DSDLookAndFeel::getConsoleBevel());
         channelNameLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
-        channelNameLabel.setEditable(true); // User can click and edit channel name!
+        channelNameLabel.setEditable(true);
         channelNameLabel.onTextChange = [this]()
         {
             channelRef.setName(channelNameLabel.getText().toStdString());
@@ -59,18 +60,18 @@ namespace dsd
 
     void ChannelStrip::setupButtons()
     {
-        // Direct Monitor Button (Green illuminated)
+        // Direct Monitor Button (Green)
         directMonitorBtn.setClickingTogglesState(true);
         directMonitorBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff064e3b));
         directMonitorBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentGreen());
-        directMonitorBtn.setTooltip("Direct Monitor (PFL/Zero-latency monitor)");
+        directMonitorBtn.setTooltip("Direct Monitor");
         directMonitorBtn.onClick = [this]()
         {
             channelRef.setDirectMonitor(directMonitorBtn.getToggleState());
         };
         addAndMakeVisible(directMonitorBtn);
 
-        // Mute Button (Red illuminated)
+        // Mute Button (Red)
         muteBtn.setClickingTogglesState(true);
         muteBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff450a0a));
         muteBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentRed());
@@ -81,31 +82,61 @@ namespace dsd
         };
         addAndMakeVisible(muteBtn);
 
-        // Disable Output / Route Button (Blue illuminated - active means output routed)
+        // Disable Output / Route Button (Blue)
         disableOutputBtn.setClickingTogglesState(true);
-        disableOutputBtn.setToggleState(true, juce::dontSendNotification); // default routed to Master
+        disableOutputBtn.setToggleState(true, juce::dontSendNotification);
         disableOutputBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff1e293b));
         disableOutputBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentBlue());
-        disableOutputBtn.setTooltip("Route Output to Master");
+        disableOutputBtn.setTooltip("Route Output to Mix");
         disableOutputBtn.onClick = [this]()
         {
-            // If toggle is ON, output is ENABLED (disableOutput = false)
             channelRef.setDisableOutput(!disableOutputBtn.getToggleState());
         };
         addAndMakeVisible(disableOutputBtn);
 
+        // Phase Invert Button
+        phaseInvertBtn.setClickingTogglesState(true);
+        phaseInvertBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d3139));
+        phaseInvertBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffd97706));
+        phaseInvertBtn.setTooltip("Invert Phase (180 deg)");
+        phaseInvertBtn.onClick = [this]()
+        {
+            channelRef.setPhaseInvert(phaseInvertBtn.getToggleState());
+        };
+        addAndMakeVisible(phaseInvertBtn);
+
+        // Mono Button
+        monoBtn.setClickingTogglesState(true);
+        monoBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d3139));
+        monoBtn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffd97706));
+        monoBtn.setTooltip("Force Mono Summing");
+        monoBtn.onClick = [this]()
+        {
+            channelRef.setForceMono(monoBtn.getToggleState());
+        };
+        addAndMakeVisible(monoBtn);
+
         // VST Plugin Rack Button
         vstRackBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
         vstRackBtn.setTooltip("Open Channel VST3 Plugin Rack");
-        vstRackBtn.onClick = [this]()
-        {
-            juce::AlertWindow::showMessageBoxAsync(
-                juce::AlertWindow::InfoIcon,
-                "VST Plugin Rack",
-                channelNameLabel.getText() + " Plugin Chain\n(Milestone v0.2: VST3 loader, bypass, & editor)",
-                "OK");
-        };
+        vstRackBtn.onClick = [this]() { openVstRackWindow(); };
         addAndMakeVisible(vstRackBtn);
+    }
+
+    void ChannelStrip::openVstRackWindow()
+    {
+        auto rackComp = std::make_unique<PluginRackDialog>(channelRef);
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(rackComp.release());
+        opts.dialogTitle = "DSD Mixer - " + channelNameLabel.getText() + " VST3 Rack";
+        opts.componentToCentreAround = this;
+        opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = true;
+        opts.resizable = true;
+
+        opts.launchAsync();
     }
 
     void ChannelStrip::updateMeterFromAudio()
@@ -120,7 +151,6 @@ namespace dsd
 
         topMeter.setMeterValues(pL, pR, hL, hR, clip);
 
-        // Update digital readout in dBFS
         if (peakMax <= 0.001f)
         {
             dbfsReadout.setText("-oo", juce::dontSendNotification);
@@ -137,45 +167,60 @@ namespace dsd
             else
                 dbfsReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterGreen());
         }
+
+        // Update plugin count on VST button
+        int count = channelRef.getPluginRack().getNumPlugins();
+        if (count > 0)
+            vstRackBtn.setButtonText("[ VST (" + juce::String(count) + ") ]");
+        else
+            vstRackBtn.setButtonText("[ VST RACK ]");
     }
 
     void ChannelStrip::resized()
     {
-        auto area = getLocalBounds().reduced(4, 4);
+        auto area = getLocalBounds().reduced(3, 3);
 
         // 1. Top Section: OLED panel housing meter & badges
-        auto oledArea = area.removeFromTop(80);
-        auto meterCol = oledArea.removeFromLeft(36);
-        topMeter.setBounds(meterCol.removeFromTop(56));
+        auto oledArea = area.removeFromTop(74);
+        auto meterCol = oledArea.removeFromLeft(34);
+        topMeter.setBounds(meterCol.removeFromTop(52));
         dbfsReadout.setBounds(meterCol);
 
         oledArea.removeFromLeft(4);
         auto badgesCol = oledArea;
-        directMonitorBtn.setBounds(badgesCol.removeFromTop(24).removeFromLeft(42));
-        chNumberBadge.setBounds(badgesCol.removeFromTop(24).removeFromRight(50));
+        directMonitorBtn.setBounds(badgesCol.removeFromTop(24).removeFromLeft(38));
+        chNumberBadge.setBounds(badgesCol.removeFromTop(24).removeFromRight(46));
 
-        area.removeFromTop(6);
+        area.removeFromTop(5);
 
-        // 2. Buttons Row: MUTE and OUT side-by-side
-        auto btnRow = area.removeFromTop(28);
-        const int btnW = (btnRow.getWidth() - 4) / 2;
+        // 2. Buttons Row: MUTE and OUT
+        auto btnRow = area.removeFromTop(26);
+        const int btnW = (btnRow.getWidth() - 3) / 2;
         muteBtn.setBounds(btnRow.removeFromLeft(btnW));
-        btnRow.removeFromLeft(4);
+        btnRow.removeFromLeft(3);
         disableOutputBtn.setBounds(btnRow);
 
-        area.removeFromTop(6);
+        area.removeFromTop(4);
 
-        // 3. VST Rack Button
+        // 3. Utility row: Phase and Mono
+        auto utilRow = area.removeFromTop(22);
+        phaseInvertBtn.setBounds(utilRow.removeFromLeft(btnW));
+        utilRow.removeFromLeft(3);
+        monoBtn.setBounds(utilRow);
+
+        area.removeFromTop(5);
+
+        // 4. VST Rack Button
         vstRackBtn.setBounds(area.removeFromTop(24));
 
-        area.removeFromTop(8);
+        area.removeFromTop(6);
 
-        // 4. Bottom Section: Channel Name Label
-        channelNameLabel.setBounds(area.removeFromBottom(28));
+        // 5. Bottom Section: Channel Name Label
+        channelNameLabel.setBounds(area.removeFromBottom(26));
 
-        area.removeFromBottom(6);
+        area.removeFromBottom(5);
 
-        // 5. Remaining vertical space: Long-throw Fader
+        // 6. Fader
         fader.setBounds(area);
     }
 
@@ -183,18 +228,18 @@ namespace dsd
     {
         auto bounds = getLocalBounds().toFloat();
 
-        // Channel strip background (brushed broadcast panel)
+        // Authentic console strip background (matte grey)
         g.setColour(DSDLookAndFeel::getConsoleStripBg());
         g.fillRoundedRectangle(bounds, 4.0f);
 
-        // Top OLED inset background
-        auto oledBounds = bounds.reduced(4.0f).removeFromTop(80.0f);
+        // OLED Inset
+        auto oledBounds = bounds.reduced(3.0f).removeFromTop(74.0f);
         g.setColour(DSDLookAndFeel::getOledBlack());
         g.fillRoundedRectangle(oledBounds, 4.0f);
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.drawRoundedRectangle(oledBounds, 4.0f, 1.0f);
 
-        // Bevel border around whole strip
+        // Bevel border
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.drawRoundedRectangle(bounds, 4.0f, 1.2f);
     }

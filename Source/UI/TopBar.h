@@ -22,14 +22,22 @@ namespace dsd
         AudioEngine& audioEngineRef;
 
         juce::Label titleLabel;
+
         juce::TextButton settingsBtn{"AUDIO DEVICE"};
+        juce::TextButton matrixBtn{"ROUTING MATRIX"};
+        juce::TextButton perfBtn{"PERF MONITOR"};
+        juce::TextButton saveSessionBtn{"SAVE .DSD"};
+        juce::TextButton loadSessionBtn{"LOAD .DSD"};
+
         juce::Label sampleRateLabel;
         juce::Label bufferSizeLabel;
         juce::Label engineStatusBadge;
         juce::Label cpuLoadLabel;
 
-        float currentCpuPercent{0.0f};
-
         void openAudioSettingsDialog();
+        void openRoutingMatrixDialog();
+        void openPerformanceDialog();
+        void onSaveSessionClicked();
+        void onLoadSessionClicked();
     };
 } // namespace dsd

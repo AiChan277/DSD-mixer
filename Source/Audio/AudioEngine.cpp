@@ -24,31 +24,29 @@ namespace dsd
         if (currentBlockSize <= 0)    currentBlockSize = DEFAULT_BUFFER_SIZE;
 
         const int maxIn = std::max(2, device->getActiveInputChannels().countNumberOfSetBits());
-        const int maxOut = std::max(2, device->getActiveOutputChannels().countNumberOfSetBits());
 
-        // Preallocate all audio scratch buffers for zero allocation during streaming
+        // Preallocate scratch buffers
         tempInputBuffer.setSize(maxIn, currentBlockSize, false, true, true);
         tempInputBuffer.clear();
 
-        masterMixBuffer.setSize(std::max(2, maxOut), currentBlockSize, false, true, true);
-        masterMixBuffer.clear();
-
         channelManager.prepare(currentSampleRate, currentBlockSize);
         routingEngine.prepare(currentSampleRate, currentBlockSize);
-        masterBus.prepare(currentSampleRate, currentBlockSize);
+        busManager.prepare(currentSampleRate, currentBlockSize);
+        outputManager.prepare(currentSampleRate, currentBlockSize);
 
         const double deadlineMs = (static_cast<double>(currentBlockSize) / currentSampleRate) * 1000.0;
         perfStats.deadlineMs.store(deadlineMs, std::memory_order_relaxed);
+        perfStats.activeWorkersCount.store(dspScheduler.getNumWorkers(), std::memory_order_relaxed);
     }
 
     void AudioEngine::audioDeviceStopped()
     {
         channelManager.releaseResources();
         routingEngine.releaseResources();
-        masterBus.releaseResources();
+        busManager.releaseResources();
+        outputManager.releaseResources();
 
         tempInputBuffer.setSize(0, 0);
-        masterMixBuffer.setSize(0, 0);
     }
 
     void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
@@ -70,59 +68,35 @@ namespace dsd
         for (int ch = 0; ch < channelsToCopy; ++ch)
         {
             if (inputChannelData != nullptr && inputChannelData[ch] != nullptr)
-            {
                 tempInputBuffer.copyFrom(ch, 0, inputChannelData[ch], numSamples);
-            }
             else
-            {
                 tempInputBuffer.clear(ch, 0, numSamples);
-            }
         }
         for (int ch = channelsToCopy; ch < tempInputBuffer.getNumChannels(); ++ch)
-        {
             tempInputBuffer.clear(ch, 0, numSamples);
-        }
 
         // ====================================================================
-        // PHASE 2: Channel DSP Processing (Input -> Gain -> Pan -> Fader -> Meter)
+        // PHASE 2: Multicore Parallel Channel DSP (16 Channels across CPU Cores)
         // ====================================================================
-        channelManager.processChannels(tempInputBuffer, numSamples);
+        dspScheduler.processChannelsParallel(channelManager, tempInputBuffer, numSamples);
 
         // ====================================================================
-        // PHASE 3: Routing Matrix Accumulation (Summing Channels to Master)
+        // PHASE 3: Routing Matrix 16x4 Accumulation
         // ====================================================================
-        routingEngine.routeChannelsToMaster(channelManager, masterMixBuffer, numSamples);
+        routingEngine.routeChannelsToOutputs(channelManager, outputManager, numSamples);
 
         // ====================================================================
-        // PHASE 4: Master Bus Processing
+        // PHASE 4: Output Buses DSP Processing (4 Independent Output Strips)
         // ====================================================================
-        masterBus.processBlock(masterMixBuffer, numSamples);
+        outputManager.processOutputs(numSamples);
 
         // ====================================================================
-        // PHASE 5: Device Output Copy
+        // PHASE 5: Output Hardware Copy
         // ====================================================================
-        if (outputChannelData != nullptr)
-        {
-            for (int ch = 0; ch < numOutputChannels; ++ch)
-            {
-                if (outputChannelData[ch] == nullptr)
-                    continue;
-
-                // If master bus has channel, copy; otherwise mute channel
-                if (ch < masterMixBuffer.getNumChannels())
-                {
-                    const float* src = masterMixBuffer.getReadPointer(ch);
-                    std::copy_n(src, numSamples, outputChannelData[ch]);
-                }
-                else
-                {
-                    std::fill_n(outputChannelData[ch], numSamples, 0.0f);
-                }
-            }
-        }
+        outputManager.writeToDeviceOutputs(outputChannelData, numOutputChannels, numSamples);
 
         // ====================================================================
-        // Real-Time Performance & XRUN / Deadline Detection
+        // Performance Timing & Deadline Monitoring
         // ====================================================================
         const int64_t endTicks = juce::Time::getHighResolutionTicks();
         const double elapsedSec = juce::Time::highResolutionTicksToSeconds(endTicks - startTicks);

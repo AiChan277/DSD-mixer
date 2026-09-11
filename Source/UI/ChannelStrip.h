@@ -30,6 +30,12 @@ namespace dsd
         juce::TextButton directMonitorBtn{"DM"};
         juce::TextButton muteBtn{"MUTE"};
         juce::TextButton disableOutputBtn{"OUT"};
+
+        // Console utility switches
+        juce::TextButton phaseInvertBtn{"Ø"};
+        juce::TextButton monoBtn{"MONO"};
+
+        // VST Plugin Rack button
         juce::TextButton vstRackBtn{"[ VST RACK ]"};
 
         // Fader & Bottom Label (from sketch)
@@ -37,5 +43,6 @@ namespace dsd
         juce::Label channelNameLabel;
 
         void setupButtons();
+        void openVstRackWindow();
     };
 } // namespace dsd
