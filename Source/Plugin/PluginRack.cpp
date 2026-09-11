@@ -23,7 +23,7 @@ namespace dsd
             if (slot != nullptr && slot->instance != nullptr)
             {
                 slot->instance->prepareToPlay(sampleRate, maxBlockSize);
-                slot->latencySamples.store(slot->instance->getLatencyInSamples(), std::memory_order_relaxed);
+                slot->latencySamples.store(slot->instance->getLatencySamples(), std::memory_order_relaxed);
             }
         }
     }
@@ -89,7 +89,7 @@ namespace dsd
 
         auto slot = std::make_unique<PluginSlot>();
         slot->name = name.isNotEmpty() ? name : pluginInstance->getName();
-        slot->latencySamples.store(pluginInstance->getLatencyInSamples(), std::memory_order_relaxed);
+        slot->latencySamples.store(pluginInstance->getLatencySamples(), std::memory_order_relaxed);
         slot->instance = std::move(pluginInstance);
 
         slots.push_back(std::move(slot));

@@ -34,16 +34,23 @@ namespace dsd
     {
         initialize();
 
-        juce::PluginDirectoryScanner scanner(knownPluginList,
-                                             formatManager,
-                                             juce::FileSearchPath(folder.getFullPathName()),
-                                             true, // recursive
-                                             juce::File()); // no dead mans pedal file for now
-
-        juce::String pluginBeingScanned;
-        while (scanner.scanNextFile(true, pluginBeingScanned))
+        for (int i = 0; i < formatManager.getNumFormats(); ++i)
         {
-            // Scanning progress
+            auto* format = formatManager.getFormat(i);
+            if (format != nullptr && format->canScanForPlugins())
+            {
+                juce::PluginDirectoryScanner scanner(knownPluginList,
+                                                     *format,
+                                                     juce::FileSearchPath(folder.getFullPathName()),
+                                                     true, // recursive
+                                                     juce::File());
+
+                juce::String pluginBeingScanned;
+                while (scanner.scanNextFile(true, pluginBeingScanned))
+                {
+                    // Scanning progress
+                }
+            }
         }
 
         if (onComplete)

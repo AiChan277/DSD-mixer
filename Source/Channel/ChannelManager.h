@@ -13,7 +13,7 @@ namespace dsd
         ChannelManager();
         ~ChannelManager() = default;
 
-        void initializeDefaultChannels(int count = NUM_CHANNELS_MVP);
+        void initializeDefaultChannels(int count = NUM_CHANNELS_LEVEL1);
 
         void prepare(double sampleRate, int maxBlockSize);
         void releaseResources();

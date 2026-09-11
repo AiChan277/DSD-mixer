@@ -24,8 +24,8 @@ if %errorLevel% neq 0 (
     exit /b %errorLevel%
 )
 
-echo [3/3] Membangun DSD Mixer (Release)...
-cmake --build build --config Release
+echo [3/3] Membangun DSD Mixer (Release dengan 4 parallel jobs)...
+cmake --build build --config Release -- -j 4
 
 if %errorLevel% neq 0 (
     echo [ERROR] Build gagal!
