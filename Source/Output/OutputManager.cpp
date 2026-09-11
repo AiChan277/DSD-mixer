@@ -13,16 +13,16 @@ namespace dsd
         outputs.reserve(count);
 
         const struct { const char* name; int chOffset; } defaultOuts[] = {
-            { "Studio Monitor", 0 },
-            { "Headphones",     0 },
-            { "OBS / Stream",   0 },
-            { "Recording",      0 }
+            { "Studio Monitor", -1 },
+            { "Headphones",     -1 },
+            { "OBS / Stream",   -1 },
+            { "Recording",      -1 }
         };
 
         for (int i = 0; i < count; ++i)
         {
             std::string name = (i < 4) ? defaultOuts[i].name : ("OUT " + std::to_string(i + 1));
-            int offset = (i < 4) ? defaultOuts[i].chOffset : 0;
+            int offset = (i < 4) ? defaultOuts[i].chOffset : -1;
             outputs.push_back(std::make_unique<OutputBus>(i + 1, name, offset));
         }
     }
@@ -73,6 +73,9 @@ namespace dsd
                 continue;
 
             const int offset = out->getDeviceChannelOffset();
+            if (offset < 0)  // null/unassigned output
+                continue;
+
             const auto& buf = out->getBuffer();
 
             // Left

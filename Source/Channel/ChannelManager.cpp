@@ -23,8 +23,8 @@ namespace dsd
         {
             std::string name = (i < 16) ? defaultNames[i] : ("CH " + std::to_string(i + 1));
             auto channel = std::make_unique<AudioChannel>(i + 1, name);
-            // Default hardware input assignment
-            channel->setInputSource(std::make_unique<HardwareInputSource>(0, 1));
+            // Default null input assignment
+            channel->setInputSource(std::make_unique<NullInputSource>());
             channels.push_back(std::move(channel));
         }
     }

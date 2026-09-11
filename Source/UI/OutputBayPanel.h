@@ -1,6 +1,6 @@
 #pragma once
-
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <juce_audio_devices/juce_audio_devices.h>
 #include "Output/OutputManager.h"
 #include "UI/OutputBayStrip.h"
 #include <vector>
@@ -11,18 +11,15 @@ namespace dsd
     class OutputBayPanel : public juce::Component
     {
     public:
-        OutputBayPanel(OutputManager& outManager);
+        OutputBayPanel(OutputManager& outManager, juce::AudioDeviceManager& deviceManager);
         ~OutputBayPanel() override = default;
-
         void updateMeters();
-
         void resized() override;
         void paint(juce::Graphics& g) override;
-
     private:
         OutputManager& outputManagerRef;
-
+        juce::AudioDeviceManager& devMgrRef;
         juce::Label headerLabel;
         std::vector<std::unique_ptr<OutputBayStrip>> outputStrips;
     };
-} // namespace dsd
+}

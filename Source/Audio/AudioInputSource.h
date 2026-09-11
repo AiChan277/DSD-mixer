@@ -128,4 +128,22 @@ namespace dsd
         float phaseIncrement{0.0f};
         bool isEnabled{false};
     };
+
+    class NullInputSource : public AudioInputSource
+    {
+    public:
+        NullInputSource() = default;
+        ~NullInputSource() override = default;
+
+        void prepare(double /*sampleRate*/, int /*maxBlockSize*/) override {}
+        void releaseResources() override {}
+
+        void readBlock(juce::AudioBuffer<float>& buffer,
+                       const juce::AudioBuffer<float>& /*deviceInput*/,
+                       int numSamples) override
+        {
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                buffer.clear(ch, 0, numSamples);
+        }
+    };
 } // namespace dsd

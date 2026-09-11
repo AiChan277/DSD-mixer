@@ -5,7 +5,7 @@ namespace dsd
     AudioChannel::AudioChannel(ChannelID id, const std::string& channelName)
         : channelID(id), name(channelName)
     {
-        inputSource = std::make_unique<HardwareInputSource>(0, 1);
+        inputSource = std::make_unique<NullInputSource>();
     }
 
     void AudioChannel::prepare(double sampleRate, int maxBlockSize)

@@ -3,15 +3,15 @@
 
 namespace dsd
 {
-    OutputBayPanel::OutputBayPanel(OutputManager& outManager)
-        : outputManagerRef(outManager)
+    OutputBayPanel::OutputBayPanel(OutputManager& outManager, juce::AudioDeviceManager& deviceManager)
+        : outputManagerRef(outManager), devMgrRef(deviceManager)
     {
         headerLabel.setText("OUTPUT BAYS (4 CHANNELS)", juce::dontSendNotification);
         headerLabel.setJustificationType(juce::Justification::centred);
         headerLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         headerLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
         headerLabel.setColour(juce::Label::outlineColourId, DSDLookAndFeel::getAccentRed());
-        headerLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
+        headerLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
         addAndMakeVisible(headerLabel);
 
         const int numOutputs = outputManagerRef.getNumOutputs();
@@ -19,7 +19,7 @@ namespace dsd
         {
             if (auto* out = outputManagerRef.getOutput(i))
             {
-                auto strip = std::make_unique<OutputBayStrip>(*out);
+                auto strip = std::make_unique<OutputBayStrip>(*out, devMgrRef);
                 addAndMakeVisible(strip.get());
                 outputStrips.push_back(std::move(strip));
             }
@@ -56,9 +56,9 @@ namespace dsd
     void OutputBayPanel::paint(juce::Graphics& g)
     {
         auto bounds = getLocalBounds().toFloat();
-        g.setColour(juce::Colour(0xff22242a));
+        g.setColour(juce::Colour(0xffBEC1C8));
         g.fillRoundedRectangle(bounds, 4.0f);
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.drawRoundedRectangle(bounds, 4.0f, 1.2f);
     }
-} // namespace dsd
+}

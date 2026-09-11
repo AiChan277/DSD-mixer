@@ -10,49 +10,48 @@ namespace dsd
     TopBar::TopBar(AudioDeviceManager& devManager, AudioEngine& audioEngine)
         : deviceManagerRef(devManager), audioEngineRef(audioEngine)
     {
-        // 1. Logo & App Title
         titleLabel.setText("DSD MIXER — LEVEL 1", juce::dontSendNotification);
         titleLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
         titleLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
         addAndMakeVisible(titleLabel);
 
-        // 2. Audio Device Settings Button
         settingsBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
+        settingsBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
         settingsBtn.onClick = [this]() { openAudioSettingsDialog(); };
         addAndMakeVisible(settingsBtn);
 
-        // 3. Routing Matrix Button
         matrixBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getAccentBlue());
+        matrixBtn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffFFFFFF));
         matrixBtn.onClick = [this]() { openRoutingMatrixDialog(); };
         addAndMakeVisible(matrixBtn);
 
-        // 4. Performance Monitor Button
         perfBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
+        perfBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
         perfBtn.onClick = [this]() { openPerformanceDialog(); };
         addAndMakeVisible(perfBtn);
 
-        // 5. Session Save / Load
-        saveSessionBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d3139));
+        saveSessionBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
+        saveSessionBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
         saveSessionBtn.onClick = [this]() { onSaveSessionClicked(); };
         addAndMakeVisible(saveSessionBtn);
 
-        loadSessionBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff2d3139));
+        loadSessionBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
+        loadSessionBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
         loadSessionBtn.onClick = [this]() { onLoadSessionClicked(); };
         addAndMakeVisible(loadSessionBtn);
 
-        // 6. Technical Readouts
         sampleRateLabel.setText("48000 Hz", juce::dontSendNotification);
         sampleRateLabel.setJustificationType(juce::Justification::centred);
         sampleRateLabel.setFont(juce::FontOptions(11.0f));
         sampleRateLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
-        sampleRateLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+        sampleRateLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
         addAndMakeVisible(sampleRateLabel);
 
         bufferSizeLabel.setText("128 smp (2.67 ms)", juce::dontSendNotification);
         bufferSizeLabel.setJustificationType(juce::Justification::centred);
         bufferSizeLabel.setFont(juce::FontOptions(11.0f));
         bufferSizeLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
-        bufferSizeLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+        bufferSizeLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
         addAndMakeVisible(bufferSizeLabel);
 
         engineStatusBadge.setText("AUDIO OK", juce::dontSendNotification);
@@ -67,7 +66,7 @@ namespace dsd
         cpuLoadLabel.setJustificationType(juce::Justification::centred);
         cpuLoadLabel.setFont(juce::FontOptions(11.0f));
         cpuLoadLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
-        cpuLoadLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
+        cpuLoadLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
         addAndMakeVisible(cpuLoadLabel);
     }
 
@@ -75,8 +74,8 @@ namespace dsd
     {
         auto selector = std::make_unique<juce::AudioDeviceSelectorComponent>(
             deviceManagerRef.getJuceManager(),
-            1, 16,  // min/max input channels
-            1, 8,   // min/max output channels
+            1, 16,
+            1, 8,
             false, false, false, false);
 
         selector->setSize(520, 440);

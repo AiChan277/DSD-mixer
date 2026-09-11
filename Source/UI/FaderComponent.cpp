@@ -32,8 +32,8 @@ namespace dsd
         valueLabel.setText("0.0 dB", juce::dontSendNotification);
         valueLabel.setJustificationType(juce::Justification::centred);
         valueLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-        valueLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
-        valueLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack().withAlpha(0.6f));
+        valueLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
+        valueLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
         addAndMakeVisible(valueLabel);
     }
 
@@ -59,7 +59,7 @@ namespace dsd
     {
         // Draw dB scale tick marks beside slider track
         g.setFont(juce::FontOptions(9.0f));
-        g.setColour(DSDLookAndFeel::getTextSecondary().withAlpha(0.65f));
+        g.setColour(DSDLookAndFeel::getTextPrimary().withAlpha(0.7f));
 
         const auto sliderBounds = slider.getBounds().toFloat();
         const float trackTop = sliderBounds.getY() + 10.0f;

@@ -56,6 +56,11 @@ namespace dsd
         void setForceMono(bool mono) noexcept { forceMono.store(mono, std::memory_order_relaxed); }
         bool getForceMono() const noexcept { return forceMono.load(std::memory_order_relaxed); }
 
+        std::string getInputDeviceName() const { return inputDeviceName; }
+        void setInputDeviceName(const std::string& name) { inputDeviceName = name; }
+        int getInputChannelIndex() const noexcept { return inputChannelIndex; }
+        void setInputChannelIndex(int idx) { inputChannelIndex = idx; }
+
         void setInputSource(std::unique_ptr<AudioInputSource> source);
         AudioInputSource* getInputSource() const noexcept { return inputSource.get(); }
 
@@ -70,6 +75,8 @@ namespace dsd
     private:
         ChannelID channelID;
         std::string name;
+        std::string inputDeviceName{"None"};
+        int inputChannelIndex{-1}; // -1 = null/none
 
         std::atomic<float> gainDb{0.0f};
         std::atomic<float> faderDb{0.0f};

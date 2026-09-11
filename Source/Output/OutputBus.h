@@ -12,7 +12,7 @@ namespace dsd
     class OutputBus
     {
     public:
-        OutputBus(BusID id, const std::string& initialName, int targetDeviceChOffset = 0);
+        OutputBus(BusID id, const std::string& initialName, int targetDeviceChOffset = -1);
         ~OutputBus() = default;
 
         void prepare(double sampleRate, int maxBlockSize);
@@ -24,6 +24,9 @@ namespace dsd
 
         std::string getName() const { return name; }
         void setName(const std::string& newName) { name = newName; }
+
+        std::string getOutputDeviceName() const { return outputDeviceName; }
+        void setOutputDeviceName(const std::string& name) { outputDeviceName = name; }
 
         int getDeviceChannelOffset() const noexcept { return deviceChannelOffset.load(std::memory_order_relaxed); }
         void setDeviceChannelOffset(int offset) noexcept { deviceChannelOffset.store(offset, std::memory_order_relaxed); }
@@ -46,8 +49,9 @@ namespace dsd
     private:
         BusID busID;
         std::string name;
+        std::string outputDeviceName{"None"};
 
-        std::atomic<int> deviceChannelOffset{0}; // e.g. 0 for Ch 1/2, 2 for Ch 3/4
+        std::atomic<int> deviceChannelOffset{-1}; // e.g. 0 for Ch 1/2, 2 for Ch 3/4, -1 for null/unassigned
         std::atomic<float> faderDb{0.0f};
         std::atomic<bool> mute{false};
         std::atomic<bool> monitor{true};

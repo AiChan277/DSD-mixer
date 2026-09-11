@@ -46,7 +46,7 @@ namespace dsd
     void MeterComponent::drawSingleMeterBar(juce::Graphics& g, const juce::Rectangle<float>& bounds, float peak, float hold)
     {
         // Dark recessed meter background
-        g.setColour(juce::Colour(0xff121316));
+        g.setColour(DSDLookAndFeel::getOledBlack());
         g.fillRoundedRectangle(bounds, 2.0f);
 
         const float prop = linearToMeterProportion(peak);
@@ -97,7 +97,7 @@ namespace dsd
             // Dim dark indicator
             g.setColour(juce::Colour(0xff3f1010));
             g.fillEllipse(clipX, clipY, clipSize, clipSize);
-            g.setColour(juce::Colour(0xff2d2f36));
+            g.setColour(DSDLookAndFeel::getConsoleBevel());
             g.drawEllipse(clipX, clipY, clipSize, clipSize, 0.8f);
         }
 

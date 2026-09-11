@@ -3,35 +3,34 @@
 
 namespace dsd
 {
-    OutputBayStrip::OutputBayStrip(OutputBus& bus)
-        : outputBusRef(bus),
-          stereoMeter(true) // Dual stereo meter
+    OutputBayStrip::OutputBayStrip(OutputBus& bus, juce::AudioDeviceManager& deviceManager)
+        : outputBusRef(bus), devMgrRef(deviceManager), stereoMeter(true)
     {
-        // 1. Bus Name Label (Clickable & Editable directly by user!)
+        addAndMakeVisible(outputDeviceSelector);
+        outputDeviceSelector.onChange = [this]() { onDeviceSelected(); };
+        refreshDeviceList();
+
         busNameLabel.setText(outputBusRef.getName(), juce::dontSendNotification);
         busNameLabel.setJustificationType(juce::Justification::centred);
         busNameLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
         busNameLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
         busNameLabel.setColour(juce::Label::outlineColourId, DSDLookAndFeel::getAccentRed());
-        busNameLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
-        busNameLabel.setEditable(true); // User can click and edit the output name!
+        busNameLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
+        busNameLabel.setEditable(true);
         busNameLabel.onTextChange = [this]()
         {
             outputBusRef.setName(busNameLabel.getText().toStdString());
         };
         addAndMakeVisible(busNameLabel);
 
-        // 2. Setup Functional Buttons
         setupButtons();
 
-        // 3. Stereo Meter
         stereoMeter.setClipResetCallback([this]()
         {
             outputBusRef.getMeterValues().resetClip();
         });
         addAndMakeVisible(stereoMeter);
 
-        // 4. Stereo Fader
         fader.setValue(outputBusRef.getFaderDb(), juce::dontSendNotification);
         fader.setOnValueChanged([this](float db)
         {
@@ -40,58 +39,67 @@ namespace dsd
         addAndMakeVisible(fader);
     }
 
-    void OutputBayStrip::setupButtons()
+    void OutputBayStrip::refreshDeviceList()
     {
-        // Mute Button (Red illuminated)
-        muteBtn.setClickingTogglesState(true);
-        muteBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff450a0a));
-        muteBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentRed());
-        muteBtn.setTooltip("Mute Output");
-        muteBtn.onClick = [this]()
+        outputDeviceSelector.clear(juce::dontSendNotification);
+        outputDeviceSelector.addItem("None", 1);
+        
+        if (auto* device = devMgrRef.getCurrentAudioDevice())
         {
-            outputBusRef.setMute(muteBtn.getToggleState());
-        };
-        addAndMakeVisible(muteBtn);
+            auto outputNames = device->getOutputChannelNames();
+            for (int i = 0; i < outputNames.size(); i += 2)
+            {
+                int id = i / 2 + 2;
+                juce::String label;
+                if (i + 1 < outputNames.size())
+                    label = outputNames[i] + " / " + outputNames[i + 1];
+                else
+                    label = outputNames[i];
+                outputDeviceSelector.addItem(label, id);
+            }
+        }
 
-        // Monitor Button (Green illuminated)
-        monitorBtn.setClickingTogglesState(true);
-        monitorBtn.setToggleState(outputBusRef.getMonitor(), juce::dontSendNotification);
-        monitorBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff14532d));
-        monitorBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentGreen());
-        monitorBtn.setTooltip("Toggle Monitor Send");
-        monitorBtn.onClick = [this]()
-        {
-            outputBusRef.setMonitor(monitorBtn.getToggleState());
-        };
-        addAndMakeVisible(monitorBtn);
-
-        // Target Hardware Device Channel Offset Button
+        int currentId = 1;
         int currentOffset = outputBusRef.getDeviceChannelOffset();
-        deviceChBtn.setButtonText(juce::String::formatted("CH %d/%d", currentOffset + 1, currentOffset + 2));
-        deviceChBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
-        deviceChBtn.setTooltip("Change physical output device channels");
-        deviceChBtn.onClick = [this]() { openChannelConfigMenu(); };
-        addAndMakeVisible(deviceChBtn);
+        if (currentOffset >= 0)
+            currentId = (currentOffset / 2) + 2;
+        outputDeviceSelector.setSelectedId(currentId, juce::dontSendNotification);
     }
 
-    void OutputBayStrip::openChannelConfigMenu()
+    void OutputBayStrip::onDeviceSelected()
     {
-        juce::PopupMenu menu;
-        menu.addItem(1, "Physical Channels 1 & 2 (Default Main)");
-        menu.addItem(2, "Physical Channels 3 & 4 (Headphones / Secondary)");
-        menu.addItem(3, "Physical Channels 5 & 6");
-        menu.addItem(4, "Physical Channels 7 & 8");
+        int selected = outputDeviceSelector.getSelectedId();
+        if (selected <= 1)
+        {
+            outputBusRef.setDeviceChannelOffset(-1);
+            outputBusRef.setOutputDeviceName("None");
+        }
+        else
+        {
+            int offset = (selected - 2) * 2;
+            outputBusRef.setDeviceChannelOffset(offset);
+            outputBusRef.setOutputDeviceName(outputDeviceSelector.getText().toStdString());
+        }
+    }
 
-        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&deviceChBtn),
-            [this](int result)
-            {
-                if (result >= 1 && result <= 4)
-                {
-                    int offset = (result - 1) * 2;
-                    outputBusRef.setDeviceChannelOffset(offset);
-                    deviceChBtn.setButtonText(juce::String::formatted("CH %d/%d", offset + 1, offset + 2));
-                }
-            });
+    void OutputBayStrip::setupButtons()
+    {
+        muteBtn.setClickingTogglesState(true);
+        muteBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff8B2020));
+        muteBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentRed());
+        muteBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
+        muteBtn.setColour(juce::TextButton::textColourOnId, juce::Colour(0xffFFFFFF));
+        muteBtn.onClick = [this]() { outputBusRef.setMute(muteBtn.getToggleState()); };
+        addAndMakeVisible(muteBtn);
+
+        monitorBtn.setClickingTogglesState(true);
+        monitorBtn.setToggleState(outputBusRef.getMonitor(), juce::dontSendNotification);
+        monitorBtn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff064e3b));
+        monitorBtn.setColour(juce::TextButton::buttonOnColourId, DSDLookAndFeel::getAccentGreen());
+        monitorBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
+        monitorBtn.setColour(juce::TextButton::textColourOnId, juce::Colour(0xffFFFFFF));
+        monitorBtn.onClick = [this]() { outputBusRef.setMonitor(monitorBtn.getToggleState()); };
+        addAndMakeVisible(monitorBtn);
     }
 
     void OutputBayStrip::updateMeterFromAudio()
@@ -102,51 +110,36 @@ namespace dsd
         const float hL = mv.peakHoldL.load(std::memory_order_relaxed);
         const float hR = mv.peakHoldR.load(std::memory_order_relaxed);
         const bool clip = mv.clipped.load(std::memory_order_relaxed);
-
         stereoMeter.setMeterValues(pL, pR, hL, hR, clip);
     }
 
     void OutputBayStrip::resized()
     {
         auto area = getLocalBounds().reduced(4, 4);
-
-        // 1. Device Out Name display (editable)
-        busNameLabel.setBounds(area.removeFromTop(24));
-
+        outputDeviceSelector.setBounds(area.removeFromTop(20));
         area.removeFromTop(4);
-
-        // 2. Hardware Channel Assignment selector
-        deviceChBtn.setBounds(area.removeFromTop(20));
-
-        area.removeFromTop(6);
-
-        // 3. Buttons: Mute & Monitor side-by-side
+        
+        busNameLabel.setBounds(area.removeFromTop(24));
+        area.removeFromTop(4);
+        
         auto btnRow = area.removeFromTop(26);
-        const int btnW = (btnRow.getWidth() - 4) / 2;
-        muteBtn.setBounds(btnRow.removeFromLeft(btnW));
+        muteBtn.setBounds(btnRow.removeFromLeft(btnRow.getWidth() / 2 - 2));
         btnRow.removeFromLeft(4);
         monitorBtn.setBounds(btnRow);
-
         area.removeFromTop(8);
-
-        // 4. Dual Level Meters
-        stereoMeter.setBounds(area.removeFromTop(76));
-
+        
+        stereoMeter.setBounds(area.removeFromTop(120));
         area.removeFromTop(8);
-
-        // 5. Stereo Fader
+        
         fader.setBounds(area);
     }
 
     void OutputBayStrip::paint(juce::Graphics& g)
     {
         auto bounds = getLocalBounds().toFloat();
-
-        // Authentic console output bay finish (slightly darker metal with precision border)
-        g.setColour(juce::Colour(0xff27292f));
+        g.setColour(juce::Colour(0xffC8CACF));
         g.fillRoundedRectangle(bounds, 4.0f);
-
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.drawRoundedRectangle(bounds, 4.0f, 1.2f);
     }
-} // namespace dsd
+}
