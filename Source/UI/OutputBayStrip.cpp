@@ -54,14 +54,14 @@ namespace dsd
         outputDeviceSelector.addItem("None", 1);
 
         // 2. Direct Primary Hardware Master Output
-        outputDeviceSelector.addSectionHeading("── Master Hardware Output ──");
+        outputDeviceSelector.addSectionHeading("[ Master Hardware Output ]");
         outputDeviceSelector.addItem("Default Master Out (Ch 1-2) [Clean Direct]", 10);
 
         // 3. Real Windows Audio Output Devices (WASAPI)
         auto winOutputs = MultiDeviceManager::getInstance().getAvailableOutputDevices();
         if (!winOutputs.isEmpty())
         {
-            outputDeviceSelector.addSectionHeading("── Windows Audio Devices ──");
+            outputDeviceSelector.addSectionHeading("[ Windows Audio Devices ]");
             for (int i = 0; i < winOutputs.size(); ++i)
             {
                 outputDeviceSelector.addItem(winOutputs[i], 100 + i);

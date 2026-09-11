@@ -6,6 +6,10 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if (MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # Add local JUCE repository
 add_subdirectory(JUCE)
 
@@ -22,6 +26,8 @@ target_sources(DSDMixer PRIVATE
     Source/Application/DSDApplication.cpp
     Source/Audio/AudioTypes.h
     Source/Audio/AudioInputSource.h
+    Source/Audio/WindowAudioCapture.h
+    Source/Audio/WindowAudioCapture.cpp
     Source/Audio/AudioDeviceManager.h
     Source/Audio/AudioDeviceManager.cpp
     Source/Audio/MultiDeviceManager.h

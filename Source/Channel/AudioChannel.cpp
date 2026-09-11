@@ -10,6 +10,10 @@ namespace dsd
 
     void AudioChannel::prepare(double sampleRate, int maxBlockSize)
     {
+        currentSampleRate = sampleRate;
+        currentBlockSize = maxBlockSize;
+        isPrepared = true;
+
         channelBuffer.setSize(2, maxBlockSize, false, true, true);
         channelBuffer.clear();
 
@@ -32,6 +36,7 @@ namespace dsd
 
     void AudioChannel::releaseResources()
     {
+        isPrepared = false;
         channelBuffer.setSize(0, 0);
         meterInputProc.reset();
         meterPostGainProc.reset();
@@ -64,6 +69,8 @@ namespace dsd
     void AudioChannel::setInputSource(std::unique_ptr<AudioInputSource> source)
     {
         inputSource = std::move(source);
+        if (inputSource != nullptr && isPrepared)
+            inputSource->prepare(currentSampleRate, currentBlockSize);
     }
 
     void AudioChannel::processBlock(const juce::AudioBuffer<float>& deviceInputBuffer, int numSamples)

@@ -118,5 +118,9 @@ namespace dsd
         std::unique_ptr<AudioInputSource> inputSource;
         juce::AudioBuffer<float> channelBuffer;
         juce::MidiBuffer midiBuffer;
+
+        double currentSampleRate{48000.0};
+        int currentBlockSize{128};
+        bool isPrepared{false};
     };
 } // namespace dsd

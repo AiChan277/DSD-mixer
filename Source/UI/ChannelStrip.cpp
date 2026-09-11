@@ -88,24 +88,38 @@ namespace dsd
         inputDeviceSelector.addItem("None", 1);
 
         // 2. Direct Hardware Inputs (Zero-Latency, 100% Glitch-Free)
-        inputDeviceSelector.addSectionHeading("── Direct Hardware Inputs ──");
+        inputDeviceSelector.addSectionHeading("[ Direct Hardware Inputs ]");
         inputDeviceSelector.addItem("Primary In 1 (Mic / L) [Clean Direct]", 10);
         inputDeviceSelector.addItem("Primary In 2 (R) [Clean Direct]", 11);
         inputDeviceSelector.addItem("Primary In 1+2 (Stereo) [Clean Direct]", 12);
 
-        // 3. Real Windows Audio Input Devices (WASAPI)
+        // 3. Application Audio Capture (OBS Style Process Loopback)
+        runningApps = WindowAudioCapture::getRunningApplications();
+        if (!runningApps.empty())
+        {
+            inputDeviceSelector.addSectionHeading("[ Application Audio (OBS Style) ]");
+            for (size_t i = 0; i < runningApps.size(); ++i)
+            {
+                juce::String label = runningApps[i].appName;
+                if (runningApps[i].windowTitle.isNotEmpty())
+                    label += " (" + runningApps[i].windowTitle.substring(0, 25) + ")";
+                inputDeviceSelector.addItem(label, 500 + static_cast<int>(i));
+            }
+        }
+
+        // 4. Real Windows Audio Input Devices (WASAPI)
         auto winInputs = MultiDeviceManager::getInstance().getAvailableInputDevices();
         if (!winInputs.isEmpty())
         {
-            inputDeviceSelector.addSectionHeading("── Windows Audio Devices ──");
+            inputDeviceSelector.addSectionHeading("[ Windows Audio Devices ]");
             for (int i = 0; i < winInputs.size(); ++i)
             {
                 inputDeviceSelector.addItem(winInputs[i], 100 + i);
             }
         }
 
-        // 4. Test Tone Generators
-        inputDeviceSelector.addSectionHeading("── Test Generators ──");
+        // 5. Test Tone Generators
+        inputDeviceSelector.addSectionHeading("[ Test Tone Generators ]");
         inputDeviceSelector.addItem("Sine Wave (1 kHz)", 50);
         inputDeviceSelector.addItem("Pink Noise", 51);
 
@@ -138,14 +152,27 @@ namespace dsd
         else
         {
             int foundId = -1;
-            for (int i = 0; i < winInputs.size(); ++i)
+            // Check running apps first
+            for (size_t i = 0; i < runningApps.size(); ++i)
             {
-                if (winInputs[i] == currentDev)
+                if (runningApps[i].appName.equalsIgnoreCase(currentDev))
                 {
-                    foundId = 100 + i;
+                    foundId = 500 + static_cast<int>(i);
                     break;
                 }
             }
+            if (foundId < 0)
+            {
+                for (int i = 0; i < winInputs.size(); ++i)
+                {
+                    if (winInputs[i] == currentDev)
+                    {
+                        foundId = 100 + i;
+                        break;
+                    }
+                }
+            }
+
             if (foundId > 0)
                 inputDeviceSelector.setSelectedId(foundId, juce::dontSendNotification);
             else
@@ -196,7 +223,16 @@ namespace dsd
             channelRef.setInputDeviceName("Pink Noise");
             channelRef.setInputSource(std::make_unique<NoiseInputSource>());
         }
-        else if (id >= 100)
+        else if (id >= 500 && id < 500 + static_cast<int>(runningApps.size()))
+        {
+            // Application Audio Capture (OBS Style Process Loopback)
+            const size_t appIdx = static_cast<size_t>(id - 500);
+            const auto& app = runningApps[appIdx];
+            channelRef.setInputChannelIndex(static_cast<int>(appIdx));
+            channelRef.setInputDeviceName(app.appName.toStdString());
+            channelRef.setInputSource(std::make_unique<WindowAudioCapture>(app.processId, app.appName));
+        }
+        else if (id >= 100 && id < 500)
         {
             const juce::String selectedName = inputDeviceSelector.getText();
             channelRef.setInputChannelIndex(id - 100);
@@ -292,7 +328,7 @@ namespace dsd
         const auto& mv = channelRef.getMeterValues();
         const float pL = mv.peakL.load(std::memory_order_relaxed);
         const float pR = mv.peakR.load(std::memory_order_relaxed);
-        const float peakMax = std::max(pL, pR);
+        const float peakMax = juce::jmax(pL, pR);
         const float hL = mv.peakHoldL.load(std::memory_order_relaxed);
         const float hR = mv.peakHoldR.load(std::memory_order_relaxed);
         const bool clip = mv.clipped.load(std::memory_order_relaxed);

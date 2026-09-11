@@ -2,6 +2,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <juce_audio_devices/juce_audio_devices.h>
 #include "Channel/AudioChannel.h"
+#include "Audio/WindowAudioCapture.h"
 #include "UI/MeterComponent.h"
 #include "UI/FaderComponent.h"
 
@@ -32,6 +33,9 @@ namespace dsd
         juce::Label gainReadout;
         FaderComponent fader;
         juce::Label channelNameLabel;
+
+        std::vector<RunningAppInfo> runningApps;
+
         void setupButtons();
         void onDeviceSelected();
         void openVstRackWindow();

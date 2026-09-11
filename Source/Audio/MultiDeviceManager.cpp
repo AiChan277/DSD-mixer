@@ -30,10 +30,16 @@ namespace dsd
             if (device != nullptr)
             {
                 juce::BigInteger inChans;
-                inChans.setRange(0, 2, true);
+                auto defaultLayout = device->getDefaultInputChannels();
+                if (defaultLayout.has_value())
+                    inChans = defaultLayout.value();
+                else
+                    inChans.setRange(0, 2, true);
+
                 juce::BigInteger outChans; // Capture only
 
-                auto err = device->open(inChans, outChans, 48000.0, 128);
+                // Open with 0.0, 0 to let WASAPI shared mode negotiate the device's native rate and buffer size
+                auto err = device->open(inChans, outChans, 0.0, 0);
                 if (err.isEmpty())
                 {
                     deviceSampleRate = device->getCurrentSampleRate();
@@ -185,9 +191,14 @@ namespace dsd
             {
                 juce::BigInteger inChans;  // Render only
                 juce::BigInteger outChans;
-                outChans.setRange(0, 2, true);
+                auto defaultLayout = device->getDefaultOutputChannels();
+                if (defaultLayout.has_value())
+                    outChans = defaultLayout.value();
+                else
+                    outChans.setRange(0, 2, true);
 
-                auto err = device->open(inChans, outChans, 48000.0, 128);
+                // Open with 0.0, 0 to let WASAPI shared mode negotiate native rate and buffer size
+                auto err = device->open(inChans, outChans, 0.0, 0);
                 if (err.isEmpty())
                 {
                     deviceSampleRate = device->getCurrentSampleRate();
