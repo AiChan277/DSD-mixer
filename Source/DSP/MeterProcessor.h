@@ -28,5 +28,6 @@ namespace dsd
         float peakHoldR{0.0f};
 
         float decayPerSample{0.00005f}; // Linear decay after hold
+        int warmupSamplesRemaining{0};  // Startup transient suppression
     };
 } // namespace dsd

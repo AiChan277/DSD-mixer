@@ -17,12 +17,17 @@ namespace dsd
         holdSamplesRemainingR = 0.0f;
         peakHoldL = 0.0f;
         peakHoldR = 0.0f;
+        warmupSamplesRemaining = static_cast<int>(currentSampleRate * 0.25); // 250ms startup warmup
     }
 
     void MeterProcessor::processBlock(const float* left, const float* right, int numSamples, MeterValues& outValues) noexcept
     {
         if (numSamples <= 0)
             return;
+
+        const bool inWarmup = (warmupSamplesRemaining > 0);
+        if (inWarmup)
+            warmupSamplesRemaining -= numSamples;
 
         float blockPeakL = 0.0f;
         float blockPeakR = 0.0f;
@@ -43,7 +48,7 @@ namespace dsd
                 sumSqL += absL * absL;
                 sumSqR += absR * absR;
 
-                if (absL >= 1.0f || absR >= 1.0f)
+                if (!inWarmup && (absL >= 1.0f || absR >= 1.0f))
                     blockClipped = true;
             }
         }
@@ -54,7 +59,7 @@ namespace dsd
                 const float absL = std::abs(left[i]);
                 if (absL > blockPeakL) blockPeakL = absL;
                 sumSqL += absL * absL;
-                if (absL >= 1.0f) blockClipped = true;
+                if (!inWarmup && absL >= 1.0f) blockClipped = true;
             }
             blockPeakR = blockPeakL;
             sumSqR = sumSqL;

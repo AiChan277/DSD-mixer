@@ -87,18 +87,24 @@ namespace dsd
         // 1. None option
         inputDeviceSelector.addItem("None", 1);
 
-        // 2. Real Windows Audio Input Devices
+        // 2. Direct Hardware Inputs (Zero-Latency, 100% Glitch-Free)
+        inputDeviceSelector.addSectionHeading("── Direct Hardware Inputs ──");
+        inputDeviceSelector.addItem("Primary In 1 (Mic / L) [Clean Direct]", 10);
+        inputDeviceSelector.addItem("Primary In 2 (R) [Clean Direct]", 11);
+        inputDeviceSelector.addItem("Primary In 1+2 (Stereo) [Clean Direct]", 12);
+
+        // 3. Real Windows Audio Input Devices (WASAPI)
         auto winInputs = MultiDeviceManager::getInstance().getAvailableInputDevices();
         if (!winInputs.isEmpty())
         {
-            inputDeviceSelector.addSectionHeading("── Windows Inputs ──");
+            inputDeviceSelector.addSectionHeading("── Windows Audio Devices ──");
             for (int i = 0; i < winInputs.size(); ++i)
             {
                 inputDeviceSelector.addItem(winInputs[i], 100 + i);
             }
         }
 
-        // 3. Test Generators
+        // 4. Test Tone Generators
         inputDeviceSelector.addSectionHeading("── Test Generators ──");
         inputDeviceSelector.addItem("Sine Wave (1 kHz)", 50);
         inputDeviceSelector.addItem("Pink Noise", 51);
@@ -108,6 +114,18 @@ namespace dsd
         if (currentDev.isEmpty() || currentDev == "None")
         {
             inputDeviceSelector.setSelectedId(1, juce::dontSendNotification);
+        }
+        else if (currentDev.containsIgnoreCase("Primary In 1") || currentDev.containsIgnoreCase("Mic / L"))
+        {
+            inputDeviceSelector.setSelectedId(10, juce::dontSendNotification);
+        }
+        else if (currentDev.containsIgnoreCase("Primary In 2"))
+        {
+            inputDeviceSelector.setSelectedId(11, juce::dontSendNotification);
+        }
+        else if (currentDev.containsIgnoreCase("Stereo") && currentDev.containsIgnoreCase("Primary"))
+        {
+            inputDeviceSelector.setSelectedId(12, juce::dontSendNotification);
         }
         else if (currentDev.containsIgnoreCase("Sine"))
         {
@@ -145,6 +163,27 @@ namespace dsd
             channelRef.setInputDeviceName("None");
             channelRef.setInputSource(std::make_unique<NullInputSource>());
         }
+        else if (id == 10)
+        {
+            // Primary In 1 (Mic / L centered to stereo) - Direct Hardware
+            channelRef.setInputChannelIndex(0);
+            channelRef.setInputDeviceName("Primary In 1 (Mic / L)");
+            channelRef.setInputSource(std::make_unique<HardwareInputSource>(0, -1));
+        }
+        else if (id == 11)
+        {
+            // Primary In 2 (Right channel centered to stereo) - Direct Hardware
+            channelRef.setInputChannelIndex(1);
+            channelRef.setInputDeviceName("Primary In 2 (R)");
+            channelRef.setInputSource(std::make_unique<HardwareInputSource>(1, -1));
+        }
+        else if (id == 12)
+        {
+            // Primary In 1+2 (Stereo pair) - Direct Hardware
+            channelRef.setInputChannelIndex(0);
+            channelRef.setInputDeviceName("Primary In 1+2 (Stereo)");
+            channelRef.setInputSource(std::make_unique<HardwareInputSource>(0, 1));
+        }
         else if (id == 50)
         {
             channelRef.setInputChannelIndex(0);
@@ -163,8 +202,17 @@ namespace dsd
             channelRef.setInputChannelIndex(id - 100);
             channelRef.setInputDeviceName(selectedName.toStdString());
 
-            auto source = MultiDeviceManager::getInstance().createInputSourceFor(selectedName);
-            channelRef.setInputSource(std::move(source));
+            const juce::String primaryName = MultiDeviceManager::getInstance().getPrimaryInputDeviceName();
+            if (primaryName.isNotEmpty() && selectedName.equalsIgnoreCase(primaryName))
+            {
+                // Seamlessly use Direct Hardware Input if this device is the default host mic!
+                channelRef.setInputSource(std::make_unique<HardwareInputSource>(0, -1));
+            }
+            else
+            {
+                auto source = MultiDeviceManager::getInstance().createInputSourceFor(selectedName);
+                channelRef.setInputSource(std::move(source));
+            }
         }
     }
 

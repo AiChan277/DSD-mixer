@@ -32,19 +32,24 @@ namespace dsd
         dspModeBtn.setButtonText(schedulerRef.isParallelEnabled() ? "DSP: MULTICORE PARALLEL" : "DSP: SINGLE-THREAD (Safe)");
         addAndMakeVisible(dspModeBtn);
 
-        // Reset Clips button
+        // Reset Clips button: resets clip on all channels and outputs
         resetClipsBtn.onClick = [this]()
         {
-            int chIdx = channelSelector.getSelectedId() - 1;
-            if (auto* ch = channelManagerRef.getChannel(chIdx))
+            for (int i = 0; i < channelManagerRef.getNumChannels(); ++i)
             {
-                ch->getMeterInput().resetClip();
-                ch->getMeterPostGain().resetClip();
-                ch->getMeterPostVST().resetClip();
-                ch->getMeterValues().resetClip();
+                if (auto* ch = channelManagerRef.getChannel(i))
+                {
+                    ch->getMeterInput().resetClip();
+                    ch->getMeterPostGain().resetClip();
+                    ch->getMeterPostVST().resetClip();
+                    ch->getMeterValues().resetClip();
+                }
             }
-            if (auto* out = outputManagerRef.getOutput(0))
-                out->getMeterValues().resetClip();
+            for (int i = 0; i < outputManagerRef.getNumOutputs(); ++i)
+            {
+                if (auto* out = outputManagerRef.getOutput(i))
+                    out->getMeterValues().resetClip();
+            }
         };
         addAndMakeVisible(resetClipsBtn);
 
@@ -112,10 +117,15 @@ namespace dsd
 
         card.rmsLabel.setText("RMS:  " + rmsStr, juce::dontSendNotification);
 
-        if (peakDb >= 0.0f || isClipped)
+        if (peakDb >= 0.0f)
         {
-            card.statusLabel.setText("STATUS: CLIP DETECTED! (>0 dBFS)", juce::dontSendNotification);
+            card.statusLabel.setText("STATUS: CURRENTLY CLIPPING! (>0 dBFS)", juce::dontSendNotification);
             card.statusLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterRed());
+        }
+        else if (isClipped)
+        {
+            card.statusLabel.setText("STATUS: CLIP RECORDED (Click Reset)", juce::dontSendNotification);
+            card.statusLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterYellow());
         }
         else if (peakDb >= -3.0f)
         {

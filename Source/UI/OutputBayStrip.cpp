@@ -53,11 +53,15 @@ namespace dsd
         // 1. None option
         outputDeviceSelector.addItem("None", 1);
 
-        // 2. Real Windows Audio Output Devices
+        // 2. Direct Primary Hardware Master Output
+        outputDeviceSelector.addSectionHeading("── Master Hardware Output ──");
+        outputDeviceSelector.addItem("Default Master Out (Ch 1-2) [Clean Direct]", 10);
+
+        // 3. Real Windows Audio Output Devices (WASAPI)
         auto winOutputs = MultiDeviceManager::getInstance().getAvailableOutputDevices();
         if (!winOutputs.isEmpty())
         {
-            outputDeviceSelector.addSectionHeading("── Windows Outputs ──");
+            outputDeviceSelector.addSectionHeading("── Windows Audio Devices ──");
             for (int i = 0; i < winOutputs.size(); ++i)
             {
                 outputDeviceSelector.addItem(winOutputs[i], 100 + i);
@@ -66,9 +70,18 @@ namespace dsd
 
         // Match current assigned device name
         const juce::String currentDev = outputBusRef.getOutputDeviceName();
+        const int chOffset = outputBusRef.getDeviceChannelOffset();
+
         if (currentDev.isEmpty() || currentDev == "None")
         {
-            outputDeviceSelector.setSelectedId(1, juce::dontSendNotification);
+            if (chOffset >= 0)
+                outputDeviceSelector.setSelectedId(10, juce::dontSendNotification);
+            else
+                outputDeviceSelector.setSelectedId(1, juce::dontSendNotification);
+        }
+        else if (currentDev.containsIgnoreCase("Default Master") || currentDev.containsIgnoreCase("Master Out"))
+        {
+            outputDeviceSelector.setSelectedId(10, juce::dontSendNotification);
         }
         else
         {
@@ -97,11 +110,30 @@ namespace dsd
             outputBusRef.setDeviceChannelOffset(-1);
             outputBusRef.setOutputDeviceName("None");
         }
+        else if (id == 10)
+        {
+            // Direct master DAC output callback (zero latency, zero buffer conflict)
+            outputBusRef.setDeviceChannelOffset(0);
+            outputBusRef.setOutputDeviceName("Default Master Out");
+        }
         else if (id >= 100)
         {
             const juce::String selectedName = outputDeviceSelector.getText();
-            outputBusRef.setOutputDeviceName(selectedName.toStdString());
-            outputBusRef.setDeviceChannelOffset(0);
+            const juce::String primaryName = MultiDeviceManager::getInstance().getPrimaryOutputDeviceName();
+
+            if (primaryName.isNotEmpty() && selectedName.equalsIgnoreCase(primaryName))
+            {
+                // Matches host primary output device: render directly to master DAC channels!
+                outputBusRef.setDeviceChannelOffset(0);
+                outputBusRef.setOutputDeviceName(selectedName.toStdString());
+            }
+            else
+            {
+                // Dedicated secondary output device: render via dedicated WindowsDeviceOutputSink only!
+                // Offset MUST be -1 so OutputManager does NOT duplicate it into primary device!
+                outputBusRef.setDeviceChannelOffset(-1);
+                outputBusRef.setOutputDeviceName(selectedName.toStdString());
+            }
         }
     }
 

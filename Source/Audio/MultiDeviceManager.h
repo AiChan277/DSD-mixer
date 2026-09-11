@@ -17,7 +17,7 @@ namespace dsd
     class AudioRingBuffer
     {
     public:
-        AudioRingBuffer(int channels = 2, int capacity = 16384)
+        AudioRingBuffer(int channels = 2, int capacity = 32768)
             : fifo(capacity), buffer(channels, capacity)
         {
             buffer.clear();
@@ -28,6 +28,7 @@ namespace dsd
             fifo.reset();
             buffer.clear();
             isBuffering.store(true, std::memory_order_relaxed);
+            consecutiveUnderruns.store(0, std::memory_order_relaxed);
         }
 
         void write(const float* const* src, int numChannels, int numSamples)
@@ -63,7 +64,7 @@ namespace dsd
             }
             fifo.finishedWrite(size1 + size2);
 
-            // Pre-roll complete once buffer holds enough cushion
+            // Once cushion builds up to preRoll, allow reading
             if (isBuffering.load(std::memory_order_relaxed) && fifo.getNumReady() >= preRollSamples)
             {
                 isBuffering.store(false, std::memory_order_release);
@@ -77,12 +78,29 @@ namespace dsd
             // In pre-roll mode: output clean silence while cushion builds up
             if (isBuffering.load(std::memory_order_acquire))
             {
-                for (int ch = 0; ch < numChannels; ++ch)
+                if (fifo.getNumReady() >= preRollSamples)
                 {
-                    if (dst[ch] != nullptr)
-                        juce::FloatVectorOperations::clear(dst[ch], numSamples);
+                    isBuffering.store(false, std::memory_order_release);
                 }
-                return 0;
+                else
+                {
+                    for (int ch = 0; ch < numChannels; ++ch)
+                    {
+                        if (dst[ch] != nullptr)
+                            juce::FloatVectorOperations::clear(dst[ch], numSamples);
+                    }
+                    return 0;
+                }
+            }
+
+            // Adaptive clock drift adjustment:
+            // If cushion exceeds 3072 samples (~64ms), gently trim 4 samples to prevent latency buildup
+            const int readyBefore = fifo.getNumReady();
+            if (readyBefore > maxComfortCushion)
+            {
+                int d1, s1, d2, s2;
+                fifo.prepareToRead(4, d1, s1, d2, s2);
+                fifo.finishedRead(s1 + s2);
             }
 
             int start1, size1, start2, size2;
@@ -108,14 +126,14 @@ namespace dsd
             }
             fifo.finishedRead(readTotal);
 
-            // Smooth underflow recovery (anti-pop ramp instead of hard jump to 0)
+            // Glitch-free underflow recovery: zero-fill only missing samples of THIS block
+            // NEVER cut to an arbitrary 21ms blackout on a 1-sample deficit!
             if (readTotal < numSamples)
             {
                 for (int ch = 0; ch < numChannels; ++ch)
                 {
                     if (dst[ch] != nullptr)
                     {
-                        // Ramp down last few samples if readTotal > 0
                         if (readTotal > 16)
                         {
                             for (int i = 0; i < 16; ++i)
@@ -127,9 +145,19 @@ namespace dsd
                         juce::FloatVectorOperations::clear(dst[ch] + readTotal, numSamples - readTotal);
                     }
                 }
-                // Re-cushion to eliminate future underruns
-                isBuffering.store(true, std::memory_order_release);
+
+                // Only re-enter buffering mode if device has stopped sending audio for 30+ blocks (~100ms)
+                int underruns = consecutiveUnderruns.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (underruns >= 30)
+                {
+                    isBuffering.store(true, std::memory_order_release);
+                }
             }
+            else
+            {
+                consecutiveUnderruns.store(0, std::memory_order_relaxed);
+            }
+
             return readTotal;
         }
 
@@ -139,7 +167,9 @@ namespace dsd
         juce::AbstractFifo fifo;
         juce::AudioBuffer<float> buffer;
         std::atomic<bool> isBuffering{true};
-        static constexpr int preRollSamples = 1024; // ~21ms safety cushion
+        std::atomic<int> consecutiveUnderruns{0};
+        static constexpr int preRollSamples = 1024;    // ~21ms cushion
+        static constexpr int maxComfortCushion = 3072; // ~64ms cushion upper limit
     };
 
     // Dedicated input source capturing from a specific Windows audio device
@@ -166,12 +196,18 @@ namespace dsd
 
         bool isDeviceActive() const noexcept { return device != nullptr && device->isPlaying(); }
         juce::String getDeviceName() const noexcept { return devName; }
+        double getDeviceSampleRate() const noexcept { return deviceSampleRate; }
 
     private:
         juce::String devName;
         juce::AudioIODeviceType* devType{nullptr};
         std::unique_ptr<juce::AudioIODevice> device;
-        AudioRingBuffer ringBuffer{2, 16384};
+        AudioRingBuffer ringBuffer{2, 32768};
+
+        double targetSampleRate{48000.0};
+        double deviceSampleRate{48000.0};
+        juce::LagrangeInterpolator interpolator[2];
+        juce::AudioBuffer<float> resampleBuffer;
 
         bool openDevice();
         void closeDevice();
@@ -199,12 +235,18 @@ namespace dsd
 
         bool isDeviceActive() const noexcept { return device != nullptr && device->isPlaying(); }
         juce::String getDeviceName() const noexcept { return devName; }
+        double getDeviceSampleRate() const noexcept { return deviceSampleRate; }
 
     private:
         juce::String devName;
         juce::AudioIODeviceType* devType{nullptr};
         std::unique_ptr<juce::AudioIODevice> device;
-        AudioRingBuffer ringBuffer{2, 16384};
+        AudioRingBuffer ringBuffer{2, 32768};
+
+        double targetSampleRate{48000.0};
+        double deviceSampleRate{48000.0};
+        juce::LagrangeInterpolator interpolator[2];
+        juce::AudioBuffer<float> resampleBuffer;
 
         bool openDevice();
         void closeDevice();
@@ -221,6 +263,9 @@ namespace dsd
 
         juce::StringArray getAvailableInputDevices();
         juce::StringArray getAvailableOutputDevices();
+
+        juce::String getPrimaryInputDeviceName() const;
+        juce::String getPrimaryOutputDeviceName() const;
 
         juce::AudioIODeviceType* getWasapiDeviceType();
 

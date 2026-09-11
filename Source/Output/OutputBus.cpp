@@ -13,7 +13,14 @@ namespace dsd
     void OutputBus::setOutputDeviceName(const std::string& name)
     {
         outputDeviceName = name;
-        outputSink = MultiDeviceManager::getInstance().createOutputSinkFor(name);
+        if (deviceChannelOffset >= 0 || name == "Default Master Out" || name == "None" || name.empty())
+        {
+            outputSink.reset();
+        }
+        else
+        {
+            outputSink = MultiDeviceManager::getInstance().createOutputSinkFor(name);
+        }
     }
 
     bool OutputBus::hasDedicatedSink() const noexcept

@@ -13,7 +13,7 @@ namespace dsd
         outputs.reserve(count);
 
         const struct { const char* name; int chOffset; } defaultOuts[] = {
-            { "Studio Monitor", -1 },
+            { "Studio Monitor",  0 }, // OUT 01 connects to Primary Master Output DAC Ch 1-2
             { "Headphones",     -1 },
             { "OBS / Stream",   -1 },
             { "Recording",      -1 }
@@ -23,7 +23,10 @@ namespace dsd
         {
             std::string name = (i < 4) ? defaultOuts[i].name : ("OUT " + std::to_string(i + 1));
             int offset = (i < 4) ? defaultOuts[i].chOffset : -1;
-            outputs.push_back(std::make_unique<OutputBus>(i + 1, name, offset));
+            auto bus = std::make_unique<OutputBus>(i + 1, name, offset);
+            if (offset >= 0)
+                bus->setOutputDeviceName("Default Master Out");
+            outputs.push_back(std::move(bus));
         }
     }
 
