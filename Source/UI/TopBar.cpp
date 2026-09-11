@@ -2,6 +2,7 @@
 #include "UI/DSDLookAndFeel.h"
 #include "UI/RoutingMatrixDialog.h"
 #include "UI/PerformanceMonitorDialog.h"
+#include "UI/StageInspectorDialog.h"
 #include "Session/SessionManager.h"
 #include <juce_audio_utils/juce_audio_utils.h>
 
@@ -29,6 +30,11 @@ namespace dsd
         perfBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
         perfBtn.onClick = [this]() { openPerformanceDialog(); };
         addAndMakeVisible(perfBtn);
+
+        stageInspectorBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getAccentAmber());
+        stageInspectorBtn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff180800));
+        stageInspectorBtn.onClick = [this]() { openStageInspectorDialog(); };
+        addAndMakeVisible(stageInspectorBtn);
 
         saveSessionBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
         saveSessionBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
@@ -117,6 +123,26 @@ namespace dsd
         juce::DialogWindow::LaunchOptions opts;
         opts.content.setOwned(dlg.release());
         opts.dialogTitle = "DSD Mixer - Multicore Performance Monitor";
+        opts.componentToCentreAround = this;
+        opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = true;
+        opts.resizable = true;
+
+        opts.launchAsync();
+    }
+
+    void TopBar::openStageInspectorDialog()
+    {
+        auto dlg = std::make_unique<StageInspectorDialog>(
+            audioEngineRef.getChannelManager(),
+            audioEngineRef.getOutputManager(),
+            audioEngineRef.getScheduler()
+        );
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(dlg.release());
+        opts.dialogTitle = "DSD Mixer - Signal Stage Inspector & Diagnostics";
         opts.componentToCentreAround = this;
         opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
         opts.escapeKeyTriggersCloseButton = true;
@@ -219,6 +245,9 @@ namespace dsd
         bounds.removeFromLeft(6);
 
         perfBtn.setBounds(bounds.removeFromLeft(110));
+        bounds.removeFromLeft(6);
+
+        stageInspectorBtn.setBounds(bounds.removeFromLeft(115));
         bounds.removeFromLeft(6);
 
         saveSessionBtn.setBounds(bounds.removeFromLeft(85));

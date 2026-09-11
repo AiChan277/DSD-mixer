@@ -94,6 +94,23 @@ namespace dsd
                     outputChannelData[offset + 1][i] += srcR[i];
             }
         }
+
+        // Apply transparent output limiting protection so signals never digital-clip or wrap at DAC
+        for (int ch = 0; ch < numOutputChannels; ++ch)
+        {
+            if (outputChannelData[ch] != nullptr)
+            {
+                float* p = outputChannelData[ch];
+                for (int i = 0; i < numSamples; ++i)
+                {
+                    const float x = p[i];
+                    if (x > 0.988f)
+                        p[i] = 0.988f + 0.0119f * std::tanh((x - 0.988f) / 0.0119f);
+                    else if (x < -0.988f)
+                        p[i] = -0.988f + 0.0119f * std::tanh((x + 0.988f) / 0.0119f);
+                }
+            }
+        }
     }
 
     OutputBus* OutputManager::getOutput(int index) noexcept

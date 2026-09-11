@@ -22,6 +22,8 @@ namespace dsd
         {
             numThreads = static_cast<int>(std::thread::hardware_concurrency());
             if (numThreads <= 0) numThreads = 4;
+            // Cap worker threads to 8 to avoid OS thread scheduling overhead in real-time callbacks
+            numThreads = std::min(numThreads, 8);
         }
 
         shouldExit.store(false);
@@ -64,7 +66,11 @@ namespace dsd
                                               int numSamples)
     {
         const int totalChannels = channelManager.getNumChannels();
-        if (totalChannels <= 0 || workers.empty())
+        if (totalChannels <= 0)
+            return;
+
+        // Clean, glitch-free serial processing on audio thread by default
+        if (!parallelEnabled.load(std::memory_order_relaxed) || workers.empty())
         {
             channelManager.processChannels(deviceInputBuffer, numSamples);
             return;
@@ -94,7 +100,12 @@ namespace dsd
             if (auto* ch = channelManager.getChannel(chIdx))
                 ch->processBlock(deviceInputBuffer, numSamples);
 
-            tasksRemaining.fetch_sub(1, std::memory_order_release);
+            int rem = tasksRemaining.fetch_sub(1, std::memory_order_acq_rel) - 1;
+            if (rem <= 0)
+            {
+                std::lock_guard<std::mutex> doneLock(doneMutex);
+                cvDone.notify_one();
+            }
         }
 
         // Wait for all worker channels to finish
@@ -153,7 +164,6 @@ namespace dsd
             if (workerId >= 0 && workerId < static_cast<int>(workers.size()))
             {
                 workers[workerId]->stats.blocksProcessed.fetch_add(tasksDone, std::memory_order_relaxed);
-                // Approximate load percentage based on 2.67ms deadline
                 float load = static_cast<float>((elapsedMs / 2.67) * 100.0);
                 workers[workerId]->stats.cpuLoadPercent.store(std::clamp(load, 0.0f, 100.0f), std::memory_order_relaxed);
             }

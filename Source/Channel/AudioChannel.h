@@ -67,6 +67,16 @@ namespace dsd
         PluginRack& getPluginRack() noexcept { return pluginRack; }
         const PluginRack& getPluginRack() const noexcept { return pluginRack; }
 
+        // Stage-by-Stage Metering (A: Input, B: Post-Gain, C: Post-VST, D: Post-Fader)
+        MeterValues& getMeterInput() noexcept { return meterInputValues; }
+        const MeterValues& getMeterInput() const noexcept { return meterInputValues; }
+
+        MeterValues& getMeterPostGain() noexcept { return meterPostGainValues; }
+        const MeterValues& getMeterPostGain() const noexcept { return meterPostGainValues; }
+
+        MeterValues& getMeterPostVST() noexcept { return meterPostVSTValues; }
+        const MeterValues& getMeterPostVST() const noexcept { return meterPostVSTValues; }
+
         MeterValues& getMeterValues() noexcept { return meterValues; }
         const MeterValues& getMeterValues() const noexcept { return meterValues; }
 
@@ -76,7 +86,7 @@ namespace dsd
         ChannelID channelID;
         std::string name;
         std::string inputDeviceName{"None"};
-        int inputChannelIndex{-1}; // -1 = null/none
+        int inputChannelIndex{-1};
 
         std::atomic<float> gainDb{0.0f};
         std::atomic<float> faderDb{0.0f};
@@ -91,13 +101,22 @@ namespace dsd
         GainProcessor gainProcessor;
         GainProcessor faderProcessor;
         PanProcessor panProcessor;
-        MeterProcessor meterProcessor;
+
+        // Stage Processors
+        MeterProcessor meterInputProc;
+        MeterProcessor meterPostGainProc;
+        MeterProcessor meterPostVSTProc;
+        MeterProcessor meterProcessor; // Post-Fader
+
+        MeterValues meterInputValues;
+        MeterValues meterPostGainValues;
+        MeterValues meterPostVSTValues;
+        MeterValues meterValues; // Post-Fader
 
         PluginRack pluginRack;
 
         std::unique_ptr<AudioInputSource> inputSource;
         juce::AudioBuffer<float> channelBuffer;
         juce::MidiBuffer midiBuffer;
-        MeterValues meterValues;
     };
 } // namespace dsd

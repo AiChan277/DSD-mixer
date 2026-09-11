@@ -26,6 +26,7 @@ namespace dsd
         juce::TextButton settingsBtn{"AUDIO DEVICE"};
         juce::TextButton matrixBtn{"ROUTING MATRIX"};
         juce::TextButton perfBtn{"PERF MONITOR"};
+        juce::TextButton stageInspectorBtn{"STAGE METERS"};
         juce::TextButton saveSessionBtn{"SAVE .DSD"};
         juce::TextButton loadSessionBtn{"LOAD .DSD"};
 
@@ -37,6 +38,7 @@ namespace dsd
         void openAudioSettingsDialog();
         void openRoutingMatrixDialog();
         void openPerformanceDialog();
+        void openStageInspectorDialog();
         void onSaveSessionClicked();
         void onLoadSessionClicked();
     };

@@ -19,6 +19,9 @@ namespace dsd
         faderProcessor.prepare(sampleRate);
         faderProcessor.reset(GainProcessor::dbToLinear(faderDb.load()));
 
+        meterInputProc.prepare(sampleRate);
+        meterPostGainProc.prepare(sampleRate);
+        meterPostVSTProc.prepare(sampleRate);
         meterProcessor.prepare(sampleRate);
 
         pluginRack.prepare(sampleRate, maxBlockSize);
@@ -30,6 +33,9 @@ namespace dsd
     void AudioChannel::releaseResources()
     {
         channelBuffer.setSize(0, 0);
+        meterInputProc.reset();
+        meterPostGainProc.reset();
+        meterPostVSTProc.reset();
         meterProcessor.reset();
         pluginRack.releaseResources();
 
@@ -65,11 +71,17 @@ namespace dsd
         if (numSamples <= 0 || channelBuffer.getNumSamples() < numSamples)
             return;
 
-        // 1. Input Acquisition
+        // 1. Stage A: Input Acquisition
         if (inputSource != nullptr)
             inputSource->readBlock(channelBuffer, deviceInputBuffer, numSamples);
         else
             channelBuffer.clear(0, numSamples);
+
+        // Meter Stage A (Raw Input)
+        meterInputProc.processBlock(channelBuffer.getReadPointer(0),
+                                    channelBuffer.getReadPointer(1),
+                                    numSamples,
+                                    meterInputValues);
 
         // 2. Phase Invert
         if (phaseInvert.load(std::memory_order_relaxed))
@@ -95,9 +107,21 @@ namespace dsd
         gainProcessor.setTargetGainDb(gainDb.load(std::memory_order_relaxed));
         gainProcessor.processBlock(channelBuffer.getArrayOfWritePointers(), 2, numSamples);
 
+        // Meter Stage B (Post-Gain)
+        meterPostGainProc.processBlock(channelBuffer.getReadPointer(0),
+                                       channelBuffer.getReadPointer(1),
+                                       numSamples,
+                                       meterPostGainValues);
+
         // 5. Per-Channel VST3 Plugin Rack
         midiBuffer.clear();
         pluginRack.processBlock(channelBuffer, midiBuffer);
+
+        // Meter Stage C (Post-VST)
+        meterPostVSTProc.processBlock(channelBuffer.getReadPointer(0),
+                                      channelBuffer.getReadPointer(1),
+                                      numSamples,
+                                      meterPostVSTValues);
 
         // 6. Constant-power Pan Processing
         panProcessor.setPan(pan.load(std::memory_order_relaxed));
@@ -111,7 +135,7 @@ namespace dsd
         faderProcessor.setTargetGainDb(targetFader);
         faderProcessor.processBlock(channelBuffer.getArrayOfWritePointers(), 2, numSamples);
 
-        // 8. Meter Processing (Peak, RMS, Peak Hold, Clip)
+        // 8. Meter Stage D (Post-Fader)
         meterProcessor.processBlock(channelBuffer.getReadPointer(0),
                                     channelBuffer.getReadPointer(1),
                                     numSamples,

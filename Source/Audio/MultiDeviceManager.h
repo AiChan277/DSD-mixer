@@ -13,11 +13,11 @@
 
 namespace dsd
 {
-    // Real-time lock-free ring buffer for bridging asynchronous device threads
+    // Real-time lock-free ring buffer for bridging asynchronous device threads without glitch or click
     class AudioRingBuffer
     {
     public:
-        AudioRingBuffer(int channels = 2, int capacity = 8192)
+        AudioRingBuffer(int channels = 2, int capacity = 16384)
             : fifo(capacity), buffer(channels, capacity)
         {
             buffer.clear();
@@ -27,6 +27,7 @@ namespace dsd
         {
             fifo.reset();
             buffer.clear();
+            isBuffering.store(true, std::memory_order_relaxed);
         }
 
         void write(const float* const* src, int numChannels, int numSamples)
@@ -61,11 +62,29 @@ namespace dsd
                     buffer.clear(ch, start2, size2);
             }
             fifo.finishedWrite(size1 + size2);
+
+            // Pre-roll complete once buffer holds enough cushion
+            if (isBuffering.load(std::memory_order_relaxed) && fifo.getNumReady() >= preRollSamples)
+            {
+                isBuffering.store(false, std::memory_order_release);
+            }
         }
 
         int read(float* const* dst, int numChannels, int numSamples)
         {
             if (numSamples <= 0 || dst == nullptr) return 0;
+
+            // In pre-roll mode: output clean silence while cushion builds up
+            if (isBuffering.load(std::memory_order_acquire))
+            {
+                for (int ch = 0; ch < numChannels; ++ch)
+                {
+                    if (dst[ch] != nullptr)
+                        juce::FloatVectorOperations::clear(dst[ch], numSamples);
+                }
+                return 0;
+            }
+
             int start1, size1, start2, size2;
             fifo.prepareToRead(numSamples, start1, size1, start2, size2);
             const int readTotal = size1 + size2;
@@ -89,14 +108,27 @@ namespace dsd
             }
             fifo.finishedRead(readTotal);
 
-            // If underflow, zero out remaining samples
+            // Smooth underflow recovery (anti-pop ramp instead of hard jump to 0)
             if (readTotal < numSamples)
             {
                 for (int ch = 0; ch < numChannels; ++ch)
                 {
                     if (dst[ch] != nullptr)
+                    {
+                        // Ramp down last few samples if readTotal > 0
+                        if (readTotal > 16)
+                        {
+                            for (int i = 0; i < 16; ++i)
+                            {
+                                float ramp = 1.0f - (static_cast<float>(i) / 16.0f);
+                                dst[ch][readTotal - 16 + i] *= ramp;
+                            }
+                        }
                         juce::FloatVectorOperations::clear(dst[ch] + readTotal, numSamples - readTotal);
+                    }
                 }
+                // Re-cushion to eliminate future underruns
+                isBuffering.store(true, std::memory_order_release);
             }
             return readTotal;
         }
@@ -106,6 +138,8 @@ namespace dsd
     private:
         juce::AbstractFifo fifo;
         juce::AudioBuffer<float> buffer;
+        std::atomic<bool> isBuffering{true};
+        static constexpr int preRollSamples = 1024; // ~21ms safety cushion
     };
 
     // Dedicated input source capturing from a specific Windows audio device

@@ -72,6 +72,8 @@ target_sources(DSDMixer PRIVATE
     Source/UI/PerformanceMonitorDialog.cpp
     Source/UI/PluginRackDialog.h
     Source/UI/PluginRackDialog.cpp
+    Source/UI/StageInspectorDialog.h
+    Source/UI/StageInspectorDialog.cpp
     Source/UI/TopBar.h
     Source/UI/TopBar.cpp
     Source/UI/MainView.h
