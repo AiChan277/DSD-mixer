@@ -14,6 +14,10 @@ namespace dsd
     {
         // 1. Device input selector at the top
         inputDeviceSelector.setTextWhenNothingSelected("None");
+        inputDeviceSelector.onBeforePopup = [this]()
+        {
+            refreshDeviceList();
+        };
         inputDeviceSelector.onChange = [this]() { onDeviceSelected(); };
         addAndMakeVisible(inputDeviceSelector);
         refreshDeviceList();

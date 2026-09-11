@@ -5,26 +5,19 @@
 #include "Audio/AudioInputSource.h"
 #include "Audio/MultiDeviceManager.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-
-#include <windows.h>
-#include <mmdeviceapi.h>
-#include <audioclient.h>
-#include <audioclientactivationparams.h>
-
 #include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
 #include <thread>
 
+struct IAudioClient;
+
 namespace dsd
 {
     struct RunningAppInfo
     {
-        DWORD processId{0};
+        juce::uint32 processId{0};
         juce::String appName;
         juce::String windowTitle;
     };
@@ -33,7 +26,7 @@ namespace dsd
     class WindowAudioCapture : public AudioInputSource
     {
     public:
-        WindowAudioCapture(DWORD targetPid, const juce::String& processName);
+        WindowAudioCapture(juce::uint32 targetPid, const juce::String& processName);
         ~WindowAudioCapture() override;
 
         void prepare(double sampleRate, int maxBlockSize) override;
@@ -43,14 +36,14 @@ namespace dsd
                        int numSamples) override;
 
         bool isCapturing() const noexcept { return isRunning.load(std::memory_order_relaxed); }
-        DWORD getTargetPid() const noexcept { return pid; }
+        juce::uint32 getTargetPid() const noexcept { return pid; }
         juce::String getProcessName() const noexcept { return procName; }
 
         // Enumerate running applications with top-level windows
         static std::vector<RunningAppInfo> getRunningApplications();
 
     private:
-        DWORD pid{0};
+        juce::uint32 pid{0};
         juce::String procName;
 
         double targetSampleRate{48000.0};

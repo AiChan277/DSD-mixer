@@ -135,6 +135,7 @@ add_executable(AudioEngineTests
     Source/Session/SessionManager.cpp
     Source/Audio/AudioDeviceManager.cpp
     Source/Audio/MultiDeviceManager.cpp
+    Source/Audio/WindowAudioCapture.cpp
 )
 
 target_include_directories(AudioEngineTests PRIVATE

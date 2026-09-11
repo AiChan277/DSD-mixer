@@ -1,15 +1,29 @@
 #include "Audio/WindowAudioCapture.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+#include <audioclientactivationparams.h>
+#include <audiopolicy.h>
 #include <psapi.h>
 #include <propvarutil.h>
+#include <dwmapi.h>
 #include <iostream>
 #include <unordered_set>
+#include <cmath>
 
 #pragma comment(lib, "mmdevapi.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 namespace dsd
 {
+    // =========================================================================
     // COM Async Activation Handler for Process Loopback
+    // =========================================================================
     class ActivateAudioInterfaceCompletionHandler : public IActivateAudioInterfaceCompletionHandler
     {
     public:
@@ -20,12 +34,21 @@ namespace dsd
 
         ~ActivateAudioInterfaceCompletionHandler()
         {
+            if (unk != nullptr)
+            {
+                unk->Release();
+                unk = nullptr;
+            }
             if (completedEvent != nullptr)
+            {
                 CloseHandle(completedEvent);
+                completedEvent = nullptr;
+            }
         }
 
         STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
         {
+            if (ppv == nullptr) return E_POINTER;
             if (riid == __uuidof(IUnknown) || riid == __uuidof(IActivateAudioInterfaceCompletionHandler))
             {
                 *ppv = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
@@ -51,13 +74,17 @@ namespace dsd
 
         STDMETHODIMP ActivateCompleted(IActivateAudioInterfaceAsyncOperation* op) override
         {
-            asyncOp = op;
+            if (op != nullptr)
+            {
+                op->GetActivateResult(&hrActivateResult, &unk);
+            }
             SetEvent(completedEvent);
             return S_OK;
         }
 
         HANDLE completedEvent{nullptr};
-        IActivateAudioInterfaceAsyncOperation* asyncOp{nullptr};
+        HRESULT hrActivateResult{E_FAIL};
+        IUnknown* unk{nullptr};
 
     private:
         ULONG refCount;
@@ -66,7 +93,7 @@ namespace dsd
     // =========================================================================
     // WindowAudioCapture
     // =========================================================================
-    WindowAudioCapture::WindowAudioCapture(DWORD targetPid, const juce::String& processName)
+    WindowAudioCapture::WindowAudioCapture(juce::uint32 targetPid, const juce::String& processName)
         : pid(targetPid), procName(processName)
     {
     }
@@ -80,12 +107,14 @@ namespace dsd
     {
         targetSampleRate = (sampleRate > 1000.0) ? sampleRate : 48000.0;
 
-        if (!isRunning.load())
-        {
-            shouldStop.store(false);
-            ringBuffer.reset();
-            captureThread = std::thread(&WindowAudioCapture::threadLoop, this);
-        }
+        shouldStop.store(true);
+        if (captureThread.joinable())
+            captureThread.join();
+
+        shouldStop.store(false);
+        isRunning.store(false);
+        ringBuffer.reset();
+        captureThread = std::thread(&WindowAudioCapture::threadLoop, this);
     }
 
     void WindowAudioCapture::releaseResources()
@@ -102,7 +131,7 @@ namespace dsd
                                        const juce::AudioBuffer<float>& /*deviceInputBuffer*/,
                                        int numSamples)
     {
-        if (!isRunning.load() || numSamples <= 0)
+        if (!isRunning.load(std::memory_order_relaxed) || numSamples <= 0)
         {
             for (int ch = 0; ch < targetBuffer.getNumChannels(); ++ch)
                 targetBuffer.clear(ch, 0, numSamples);
@@ -116,6 +145,8 @@ namespace dsd
     {
         if (outClient == nullptr || pid == 0)
             return false;
+
+        *outClient = nullptr;
 
         AUDIOCLIENT_ACTIVATION_PARAMS params = {};
         params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
@@ -143,21 +174,22 @@ namespace dsd
             return false;
         }
 
-        WaitForSingleObject(handler->completedEvent, 2500);
-
-        HRESULT hrActivateResult = E_FAIL;
-        IUnknown* unk = nullptr;
-
-        if (handler->asyncOp != nullptr)
-            handler->asyncOp->GetActivateResult(&hrActivateResult, &unk);
+        // Wait for async activation callback
+        DWORD waitRes = WaitForSingleObject(handler->completedEvent, 3000);
+        if (waitRes != WAIT_OBJECT_0)
+        {
+            if (asyncOp != nullptr)
+                asyncOp->Release();
+            handler->Release();
+            return false;
+        }
 
         bool success = false;
-        if (SUCCEEDED(hrActivateResult) && unk != nullptr)
+        if (SUCCEEDED(handler->hrActivateResult) && handler->unk != nullptr)
         {
-            hr = unk->QueryInterface(__uuidof(IAudioClient), reinterpret_cast<void**>(outClient));
+            hr = handler->unk->QueryInterface(__uuidof(IAudioClient), reinterpret_cast<void**>(outClient));
             if (SUCCEEDED(hr) && *outClient != nullptr)
                 success = true;
-            unk->Release();
         }
 
         if (asyncOp != nullptr)
@@ -172,53 +204,171 @@ namespace dsd
         HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
         IAudioClient* client = nullptr;
-        if (!activateProcessLoopback(&client))
+        if (!activateProcessLoopback(&client) || client == nullptr)
         {
+            DBG("[WindowAudioCapture] Failed to activate process loopback for PID: " << (int)pid);
             if (SUCCEEDED(hrCo))
                 CoUninitialize();
             return;
         }
 
-        WAVEFORMATEX* pwfx = nullptr;
-        HRESULT hr = client->GetMixFormat(&pwfx);
-        if (FAILED(hr) || pwfx == nullptr)
+        // ---------------------------------------------------------------------
+        // Format Negotiation for Process Loopback
+        // On VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, client->GetMixFormat() returns
+        // E_NOTIMPL. We prepare candidate formats and initialize with auto-convert.
+        // ---------------------------------------------------------------------
+
+        // 1. Primary candidate: 48 kHz 32-bit Float Stereo (WASAPI standard native float)
+        WAVEFORMATEXTENSIBLE wfxFloat48 = {};
+        wfxFloat48.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        wfxFloat48.Format.nChannels = 2;
+        wfxFloat48.Format.nSamplesPerSec = 48000;
+        wfxFloat48.Format.wBitsPerSample = 32;
+        wfxFloat48.Format.nBlockAlign = (wfxFloat48.Format.nChannels * wfxFloat48.Format.wBitsPerSample) / 8; // 8
+        wfxFloat48.Format.nAvgBytesPerSec = wfxFloat48.Format.nSamplesPerSec * wfxFloat48.Format.nBlockAlign; // 384000
+        wfxFloat48.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+        wfxFloat48.Samples.wValidBitsPerSample = 32;
+        wfxFloat48.dwChannelMask = KSAUDIO_SPEAKER_STEREO;
+        wfxFloat48.SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
+
+        // 2. Second candidate: Default audio render endpoint mix format
+        WAVEFORMATEX* pDevWfx = nullptr;
+        IMMDeviceEnumerator* enumerator = nullptr;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                       __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&enumerator))) && enumerator != nullptr)
         {
+            IMMDevice* defaultDevice = nullptr;
+            if (SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &defaultDevice)) && defaultDevice != nullptr)
+            {
+                IAudioClient* defaultClient = nullptr;
+                if (SUCCEEDED(defaultDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&defaultClient))) && defaultClient != nullptr)
+                {
+                    defaultClient->GetMixFormat(&pDevWfx);
+                    defaultClient->Release();
+                }
+                defaultDevice->Release();
+            }
+            enumerator->Release();
+        }
+
+        // 3. Third candidate: 48 kHz 16-bit PCM Stereo
+        WAVEFORMATEX wfxPcm16_48 = {};
+        wfxPcm16_48.wFormatTag = WAVE_FORMAT_PCM;
+        wfxPcm16_48.nChannels = 2;
+        wfxPcm16_48.nSamplesPerSec = 48000;
+        wfxPcm16_48.wBitsPerSample = 16;
+        wfxPcm16_48.nBlockAlign = 4;
+        wfxPcm16_48.nAvgBytesPerSec = 48000 * 4;
+        wfxPcm16_48.cbSize = 0;
+
+        // 4. Fourth candidate: 44.1 kHz 16-bit PCM Stereo (Microsoft sample default)
+        WAVEFORMATEX wfxPcm16_44 = {};
+        wfxPcm16_44.wFormatTag = WAVE_FORMAT_PCM;
+        wfxPcm16_44.nChannels = 2;
+        wfxPcm16_44.nSamplesPerSec = 44100;
+        wfxPcm16_44.wBitsPerSample = 16;
+        wfxPcm16_44.nBlockAlign = 4;
+        wfxPcm16_44.nAvgBytesPerSec = 44100 * 4;
+        wfxPcm16_44.cbSize = 0;
+
+        struct FormatCandidate
+        {
+            const WAVEFORMATEX* pwfx;
+            bool isFloat;
+        };
+
+        std::vector<FormatCandidate> candidates;
+        candidates.push_back({ reinterpret_cast<const WAVEFORMATEX*>(&wfxFloat48), true });
+        if (pDevWfx != nullptr)
+        {
+            bool devIsFloat = (pDevWfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
+                               (pDevWfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+                                reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pDevWfx)->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
+            candidates.push_back({ pDevWfx, devIsFloat });
+        }
+        candidates.push_back({ &wfxPcm16_48, false });
+        candidates.push_back({ &wfxPcm16_44, false });
+
+        bool initialized = false;
+        WAVEFORMATEXTENSIBLE activeFormatExt = {};
+        bool activeIsFloat = false;
+
+        const DWORD flagSets[] = {
+            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+        };
+
+        const REFERENCE_TIME bufferDurations[] = { 0, 2000000 }; // 0 = automatic engine buffer, 200ms fallback
+
+        for (const auto& candidate : candidates)
+        {
+            for (DWORD flags : flagSets)
+            {
+                for (REFERENCE_TIME hnsBuffer : bufferDurations)
+                {
+                    HRESULT hrInit = client->Initialize(
+                        AUDCLNT_SHAREMODE_SHARED,
+                        flags,
+                        hnsBuffer,
+                        0,
+                        candidate.pwfx,
+                        nullptr);
+
+                    if (SUCCEEDED(hrInit))
+                    {
+                        if (candidate.pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+                        {
+                            memcpy(&activeFormatExt, candidate.pwfx, sizeof(WAVEFORMATEXTENSIBLE));
+                        }
+                        else
+                        {
+                            memcpy(&activeFormatExt.Format, candidate.pwfx, sizeof(WAVEFORMATEX));
+                            activeFormatExt.Format.cbSize = 0;
+                        }
+                        activeIsFloat = candidate.isFloat;
+                        initialized = true;
+                        break;
+                    }
+                }
+                if (initialized) break;
+            }
+            if (initialized) break;
+        }
+
+        if (pDevWfx != nullptr)
+        {
+            CoTaskMemFree(pDevWfx);
+            pDevWfx = nullptr;
+        }
+
+        if (!initialized)
+        {
+            DBG("[WindowAudioCapture] client->Initialize failed for all candidate formats on PID: " << (int)pid);
             client->Release();
             if (SUCCEEDED(hrCo))
                 CoUninitialize();
             return;
         }
 
-        captureSampleRate = pwfx->nSamplesPerSec > 0 ? static_cast<double>(pwfx->nSamplesPerSec) : 48000.0;
-        captureChannels = pwfx->nChannels > 0 ? pwfx->nChannels : 2;
-
         HANDLE hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
-        hr = client->Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            0,
-            0,
-            pwfx,
-            nullptr);
-
+        HRESULT hr = client->SetEventHandle(hEvent);
         if (FAILED(hr))
         {
-            CoTaskMemFree(pwfx);
+            DBG("[WindowAudioCapture] SetEventHandle failed: 0x" << juce::String::toHexString((int)hr));
             CloseHandle(hEvent);
             client->Release();
             if (SUCCEEDED(hrCo))
                 CoUninitialize();
             return;
         }
-
-        client->SetEventHandle(hEvent);
 
         IAudioCaptureClient* captureClient = nullptr;
         hr = client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&captureClient));
         if (FAILED(hr) || captureClient == nullptr)
         {
-            CoTaskMemFree(pwfx);
+            DBG("[WindowAudioCapture] GetService(IAudioCaptureClient) failed: 0x" << juce::String::toHexString((int)hr));
             CloseHandle(hEvent);
             client->Release();
             if (SUCCEEDED(hrCo))
@@ -226,29 +376,50 @@ namespace dsd
             return;
         }
 
-        client->Start();
+        hr = client->Start();
+        if (FAILED(hr))
+        {
+            DBG("[WindowAudioCapture] client->Start() failed: 0x" << juce::String::toHexString((int)hr));
+            captureClient->Release();
+            CloseHandle(hEvent);
+            client->Release();
+            if (SUCCEEDED(hrCo))
+                CoUninitialize();
+            return;
+        }
+
+        captureSampleRate = activeFormatExt.Format.nSamplesPerSec > 0 ? static_cast<double>(activeFormatExt.Format.nSamplesPerSec) : 48000.0;
+        captureChannels = activeFormatExt.Format.nChannels > 0 ? activeFormatExt.Format.nChannels : 2;
+        const int bitsPerSample = activeFormatExt.Format.wBitsPerSample;
+
         isRunning.store(true);
+        DBG("[WindowAudioCapture] Successfully started process loopback for " << procName << " (PID: " << (int)pid << ") at "
+            << captureSampleRate << " Hz, " << captureChannels << " ch, " << bitsPerSample << " bits ("
+            << (activeIsFloat ? "float" : "int") << ")");
 
         interpolator[0].reset();
         interpolator[1].reset();
 
-        const bool isFloat = (pwfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
-                             (pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-                              reinterpret_cast<WAVEFORMATEXTENSIBLE*>(pwfx)->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
-        const int bitsPerSample = pwfx->wBitsPerSample;
-
         juce::AudioBuffer<float> tempCaptureBuffer(2, 4096);
+        resampleBuffer.setSize(2, 4096);
 
         while (!shouldStop.load())
         {
-            DWORD waitRes = WaitForSingleObject(hEvent, 40);
+            DWORD waitRes = WaitForSingleObject(hEvent, 30);
             if (shouldStop.load())
                 break;
 
             UINT32 packetLength = 0;
             hr = captureClient->GetNextPacketSize(&packetLength);
             if (FAILED(hr))
+            {
+                if (hr == AUDCLNT_E_DEVICE_INVALIDATED || hr == AUDCLNT_E_RESOURCES_INVALIDATED)
+                {
+                    DBG("[WindowAudioCapture] Device or process invalidated for " << procName);
+                    break;
+                }
                 continue;
+            }
 
             while (packetLength > 0 && !shouldStop.load())
             {
@@ -272,7 +443,7 @@ namespace dsd
                     {
                         tempCaptureBuffer.clear(0, numFramesRead);
                     }
-                    else if (isFloat && bitsPerSample == 32)
+                    else if (activeIsFloat && bitsPerSample == 32)
                     {
                         const float* floatSrc = reinterpret_cast<const float*>(pData);
                         if (captureChannels >= 2)
@@ -315,12 +486,29 @@ namespace dsd
                             }
                         }
                     }
+                    else if (bitsPerSample == 24)
+                    {
+                        const uint8_t* byteSrc = reinterpret_cast<const uint8_t*>(pData);
+                        constexpr float inv8388608 = 1.0f / 8388608.0f;
+                        const int stride = 3 * captureChannels;
+                        for (UINT32 i = 0; i < numFramesRead; ++i)
+                        {
+                            const uint8_t* pFrame = byteSrc + i * stride;
+                            int32_t s0 = static_cast<int32_t>((pFrame[0] << 8) | (pFrame[1] << 16) | (pFrame[2] << 24)) >> 8;
+                            int32_t s1 = (captureChannels >= 2)
+                                ? (static_cast<int32_t>((pFrame[3] << 8) | (pFrame[4] << 16) | (pFrame[5] << 24)) >> 8)
+                                : s0;
+
+                            leftDst[i] = static_cast<float>(s0) * inv8388608;
+                            rightDst[i] = static_cast<float>(s1) * inv8388608;
+                        }
+                    }
                     else
                     {
                         tempCaptureBuffer.clear(0, numFramesRead);
                     }
 
-                    // Resample to engine target rate (48 kHz) if needed
+                    // Resample to engine target rate if needed
                     if (std::abs(captureSampleRate - targetSampleRate) < 1.0)
                     {
                         ringBuffer.write(tempCaptureBuffer.getArrayOfReadPointers(), 2, numFramesRead);
@@ -331,7 +519,9 @@ namespace dsd
                         const int numProduced = static_cast<int>(std::round(static_cast<double>(numFramesRead) / speedRatio));
                         if (numProduced > 0)
                         {
-                            resampleBuffer.setSize(2, numProduced, false, false, true);
+                            if (resampleBuffer.getNumSamples() < numProduced)
+                                resampleBuffer.setSize(2, numProduced, false, false, true);
+
                             for (int ch = 0; ch < 2; ++ch)
                             {
                                 interpolator[ch].process(speedRatio, tempCaptureBuffer.getReadPointer(ch),
@@ -352,7 +542,6 @@ namespace dsd
         client->Stop();
         captureClient->Release();
         client->Release();
-        CoTaskMemFree(pwfx);
         CloseHandle(hEvent);
 
         isRunning.store(false);
@@ -368,39 +557,47 @@ namespace dsd
     {
         std::vector<RunningAppInfo> apps;
         std::unordered_set<DWORD> seenPids;
+        int total{0};
+        int visible{0};
+        int withTitle{0};
+        int stylePass{0};
+        int uncloaked{0};
     };
 
     static BOOL CALLBACK EnumWindowsCallback(HWND hWnd, LPARAM lParam)
     {
         auto* data = reinterpret_cast<WindowEnumData*>(lParam);
+        data->total++;
 
         if (!IsWindowVisible(hWnd))
             return TRUE;
+        data->visible++;
 
         int titleLen = GetWindowTextLengthW(hWnd);
         if (titleLen <= 0)
             return TRUE;
+        data->withTitle++;
 
-        // Skip windows without minimize/maximize or child tooltips
+        // Skip windows without top-level visible styles
         LONG style = GetWindowLongW(hWnd, GWL_STYLE);
         if (!(style & WS_VISIBLE) || (style & WS_CHILD))
             return TRUE;
+        data->stylePass++;
+
+        // Check if window is cloaked (hidden virtual desktop or suspended UWP tile)
+        int cloaked = 0;
+        if (SUCCEEDED(DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0)
+            return TRUE;
+        data->uncloaked++;
 
         DWORD pid = 0;
         GetWindowThreadProcessId(hWnd, &pid);
         if (pid == 0 || pid == GetCurrentProcessId())
             return TRUE;
 
-        if (data->seenPids.count(pid) > 0)
-            return TRUE;
-
         std::vector<wchar_t> titleBuf(titleLen + 1);
         GetWindowTextW(hWnd, titleBuf.data(), titleLen + 1);
         juce::String title(juce::CharPointer_UTF16(reinterpret_cast<const juce::CharPointer_UTF16::CharType*>(titleBuf.data())));
-
-        // Filter system windows
-        if (title == "Program Manager" || title == "Settings" || title == "Windows Input Experience")
-            return TRUE;
 
         // Query process executable name
         HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -417,6 +614,77 @@ namespace dsd
             CloseHandle(hProcess);
         }
 
+        // Handle UWP apps hosted by ApplicationFrameHost (e.g. Spotify Store App, Edge, Netflix)
+        if (appName.equalsIgnoreCase("ApplicationFrameHost"))
+        {
+            DWORD realPid = 0;
+            EnumChildWindows(hWnd, [](HWND childHwnd, LPARAM lP) -> BOOL
+            {
+                DWORD childPid = 0;
+                GetWindowThreadProcessId(childHwnd, &childPid);
+                if (childPid != 0 && childPid != GetCurrentProcessId())
+                {
+                    HANDLE hChildProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, childPid);
+                    if (hChildProc != nullptr)
+                    {
+                        wchar_t cPath[MAX_PATH];
+                        DWORD cSize = MAX_PATH;
+                        if (QueryFullProcessImageNameW(hChildProc, 0, cPath, &cSize))
+                        {
+                            juce::String cName = juce::File(juce::String(juce::CharPointer_UTF16(reinterpret_cast<const juce::CharPointer_UTF16::CharType*>(cPath)))).getFileNameWithoutExtension();
+                            if (!cName.equalsIgnoreCase("ApplicationFrameHost"))
+                            {
+                                *reinterpret_cast<DWORD*>(lP) = childPid;
+                                CloseHandle(hChildProc);
+                                return FALSE; // Found real child UWP process PID, stop search
+                            }
+                        }
+                        CloseHandle(hChildProc);
+                    }
+                }
+                return TRUE;
+            }, reinterpret_cast<LPARAM>(&realPid));
+
+            if (realPid != 0)
+            {
+                pid = realPid;
+                HANDLE hReal = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                if (hReal != nullptr)
+                {
+                    wchar_t pathBuf[MAX_PATH];
+                    DWORD size = MAX_PATH;
+                    if (QueryFullProcessImageNameW(hReal, 0, pathBuf, &size))
+                    {
+                        juce::String fullPath(juce::CharPointer_UTF16(reinterpret_cast<const juce::CharPointer_UTF16::CharType*>(pathBuf)));
+                        appName = juce::File(fullPath).getFileNameWithoutExtension();
+                    }
+                    CloseHandle(hReal);
+                }
+            }
+        }
+
+        // Filter system utilities that don't output user audio
+        if (title == "Program Manager" || title == "Settings" || title == "Windows Input Experience" ||
+            appName.equalsIgnoreCase("ApplicationFrameHost") || appName.equalsIgnoreCase("SearchApp") ||
+            appName.equalsIgnoreCase("StartMenuExperienceHost") || appName.equalsIgnoreCase("ShellExperienceHost"))
+        {
+            return TRUE;
+        }
+
+        if (data->seenPids.count(pid) > 0)
+        {
+            // If already discovered via audio sessions, update with real window title
+            for (auto& app : data->apps)
+            {
+                if (app.processId == pid && app.windowTitle == "Audio Stream")
+                {
+                    app.windowTitle = title;
+                    break;
+                }
+            }
+            return TRUE;
+        }
+
         data->seenPids.insert(pid);
         data->apps.push_back({ pid, appName, title });
         return TRUE;
@@ -425,7 +693,80 @@ namespace dsd
     std::vector<RunningAppInfo> WindowAudioCapture::getRunningApplications()
     {
         WindowEnumData data;
+
+        // 1. WASAPI Active Audio Sessions Enumerator
+        // Discovers all applications currently connected to Windows audio playback (Spotify, Discord, Chrome, Games, etc.)
+        HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+        IMMDeviceEnumerator* pEnum = nullptr;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                       __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&pEnum))) && pEnum != nullptr)
+        {
+            IMMDevice* pDev = nullptr;
+            if (SUCCEEDED(pEnum->GetDefaultAudioEndpoint(eRender, eMultimedia, &pDev)) && pDev != nullptr)
+            {
+                IAudioSessionManager2* pMgr = nullptr;
+                if (SUCCEEDED(pDev->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(&pMgr))) && pMgr != nullptr)
+                {
+                    IAudioSessionEnumerator* pSessionEnum = nullptr;
+                    if (SUCCEEDED(pMgr->GetSessionEnumerator(&pSessionEnum)) && pSessionEnum != nullptr)
+                    {
+                        int count = 0;
+                        pSessionEnum->GetCount(&count);
+                        for (int i = 0; i < count; ++i)
+                        {
+                            IAudioSessionControl* pCtrl = nullptr;
+                            if (SUCCEEDED(pSessionEnum->GetSession(i, &pCtrl)) && pCtrl != nullptr)
+                            {
+                                IAudioSessionControl2* pCtrl2 = nullptr;
+                                if (SUCCEEDED(pCtrl->QueryInterface(__uuidof(IAudioSessionControl2), reinterpret_cast<void**>(&pCtrl2))) && pCtrl2 != nullptr)
+                                {
+                                    DWORD pid = 0;
+                                    if (SUCCEEDED(pCtrl2->GetProcessId(&pid)) && pid != 0 && pid != GetCurrentProcessId())
+                                    {
+                                        if (data.seenPids.count(pid) == 0)
+                                        {
+                                            HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                                            if (hProc != nullptr)
+                                            {
+                                                wchar_t pBuf[MAX_PATH];
+                                                DWORD pSize = MAX_PATH;
+                                                if (QueryFullProcessImageNameW(hProc, 0, pBuf, &pSize))
+                                                {
+                                                    juce::String fullPath(juce::CharPointer_UTF16(reinterpret_cast<const juce::CharPointer_UTF16::CharType*>(pBuf)));
+                                                    juce::String appName = juce::File(fullPath).getFileNameWithoutExtension();
+                                                    if (!appName.equalsIgnoreCase("ApplicationFrameHost") &&
+                                                        !appName.equalsIgnoreCase("SearchApp") &&
+                                                        !appName.equalsIgnoreCase("audiodg"))
+                                                    {
+                                                        data.seenPids.insert(pid);
+                                                        data.apps.push_back({ pid, appName, "Audio Stream" });
+                                                    }
+                                                }
+                                                CloseHandle(hProc);
+                                            }
+                                        }
+                                    }
+                                    pCtrl2->Release();
+                                }
+                                pCtrl->Release();
+                            }
+                        }
+                        pSessionEnum->Release();
+                    }
+                    pMgr->Release();
+                }
+                pDev->Release();
+            }
+            pEnum->Release();
+        }
+
+        if (SUCCEEDED(hrCo))
+            CoUninitialize();
+
+        // 2. Desktop Window Enumeration (finds all open applications and enriches window titles)
         EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&data));
+
         return data.apps;
     }
 } // namespace dsd

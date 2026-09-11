@@ -8,6 +8,18 @@
 
 namespace dsd
 {
+    class DynamicComboBox : public juce::ComboBox
+    {
+    public:
+        std::function<void()> onBeforePopup;
+        void showPopup() override
+        {
+            if (onBeforePopup)
+                onBeforePopup();
+            juce::ComboBox::showPopup();
+        }
+    };
+
     class ChannelStrip : public juce::Component
     {
     public:
@@ -20,7 +32,7 @@ namespace dsd
     private:
         AudioChannel& channelRef;
         juce::AudioDeviceManager& devMgrRef;
-        juce::ComboBox inputDeviceSelector;
+        DynamicComboBox inputDeviceSelector;
         juce::Label chNumberBadge;
         juce::Label dbfsReadout;
         MeterComponent topMeter;

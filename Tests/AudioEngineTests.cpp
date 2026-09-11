@@ -8,6 +8,7 @@
 #include "DSP/PanProcessor.h"
 #include "DSP/MeterProcessor.h"
 #include "Audio/AudioInputSource.h"
+#include "Audio/WindowAudioCapture.h"
 #include "Channel/AudioChannel.h"
 #include "Channel/ChannelManager.h"
 #include "Scheduler/DSPScheduler.h"
@@ -196,6 +197,42 @@ void testDeviceEnumeration()
     }
 }
 
+void testWindowAudioCapture()
+{
+    std::cout << "[TEST] Running WindowAudioCapture (OBS Process Loopback) tests..." << std::endl;
+
+    auto apps = dsd::WindowAudioCapture::getRunningApplications();
+    std::cout << "  Enumerated " << apps.size() << " running application windows:" << std::endl;
+    for (size_t i = 0; i < std::min<size_t>(apps.size(), 5); ++i)
+    {
+        std::cout << "    [" << i << "] PID " << apps[i].processId << ": "
+                  << apps[i].appName.toStdString() << " - \""
+                  << apps[i].windowTitle.substring(0, 30).toStdString() << "\"" << std::endl;
+    }
+
+    dsd::AudioChannel channel(1, "App Channel");
+    channel.prepare(48000.0, 256);
+
+    if (!apps.empty())
+    {
+        auto capture = std::make_unique<dsd::WindowAudioCapture>(apps[0].processId, apps[0].appName);
+        assert(capture->getTargetPid() == apps[0].processId);
+        assert(capture->getProcessName() == apps[0].appName);
+
+        channel.setInputSource(std::move(capture));
+
+        juce::AudioBuffer<float> dummyInput(2, 256);
+        dummyInput.clear();
+
+        for (int i = 0; i < 5; ++i)
+        {
+            channel.processBlock(dummyInput, 256);
+        }
+    }
+
+    std::cout << "[PASS] WindowAudioCapture tests passed cleanly." << std::endl;
+}
+
 int main()
 {
     std::cout << "=================================================" << std::endl;
@@ -208,6 +245,7 @@ int main()
     testMeterProcessor();
     test16x4RoutingAndOutputs();
     testMulticoreScheduler();
+    testWindowAudioCapture();
 
     std::cout << "=================================================" << std::endl;
     std::cout << " All Level 1 Engine Tests Successfully Passed!   " << std::endl;
