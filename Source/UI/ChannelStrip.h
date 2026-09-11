@@ -12,7 +12,7 @@ namespace dsd
     {
     public:
         ChannelStrip(AudioChannel& channel, juce::AudioDeviceManager& deviceManager);
-        ~ChannelStrip() override = default;
+        ~ChannelStrip() override;
         void updateMeterFromAudio();
         void refreshDeviceList();
         void resized() override;
@@ -39,5 +39,7 @@ namespace dsd
         void setupButtons();
         void onDeviceSelected();
         void openVstRackWindow();
+
+        juce::Component::SafePointer<juce::DocumentWindow> activeRackWindow;
     };
 }

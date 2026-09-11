@@ -51,17 +51,13 @@ namespace dsd
     {
         auto bounds = getLocalBounds();
         valueLabel.setBounds(bounds.removeFromTop(18).reduced(4, 0));
-        // Leaves margins on both sides for dB tick labels
-        slider.setBounds(bounds.reduced(14, 4));
+        slider.setBounds(bounds);
     }
 
     void FaderComponent::paint(juce::Graphics& g)
     {
-        // Draw dB scale tick marks beside slider track
-        g.setFont(juce::FontOptions(9.0f));
-        g.setColour(DSDLookAndFeel::getTextPrimary().withAlpha(0.7f));
-
         const auto sliderBounds = slider.getBounds().toFloat();
+        const float trackCenterX = sliderBounds.getX() + sliderBounds.getWidth() * 0.40f;
         const float trackTop = sliderBounds.getY() + 10.0f;
         const float trackHeight = sliderBounds.getHeight() - 20.0f;
 
@@ -81,13 +77,33 @@ namespace dsd
         {
             const float prop = static_cast<float>(slider.valueToProportionOfLength(m.db));
             const float y = trackTop + trackHeight * (1.0f - prop);
+            const bool isUnity = (std::abs(m.db) < 0.01f);
 
             // Left tick mark
-            g.fillRect(sliderBounds.getX() - 4.0f, y - 0.5f, 4.0f, 1.0f);
-            // Right tick mark & label
-            g.fillRect(sliderBounds.getRight(), y - 0.5f, 4.0f, 1.0f);
-            g.drawText(m.label, static_cast<int>(sliderBounds.getRight() + 5.0f), static_cast<int>(y - 6.0f),
-                       20, 12, juce::Justification::centredLeft, false);
+            g.setColour(isUnity ? DSDLookAndFeel::getAccentAmber() : DSDLookAndFeel::getTextPrimary().withAlpha(0.6f));
+            g.fillRect(trackCenterX - 18.0f, y - 0.5f, 3.5f, isUnity ? 1.5f : 1.0f);
+
+            // Right tick mark
+            const float rightTickLen = isUnity ? 6.0f : 3.5f;
+            g.fillRect(trackCenterX + 15.0f, y - 0.5f, rightTickLen, isUnity ? 1.5f : 1.0f);
+
+            // Text label
+            if (isUnity)
+            {
+                g.setColour(DSDLookAndFeel::getAccentAmber());
+                g.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+            }
+            else
+            {
+                g.setColour(DSDLookAndFeel::getTextPrimary().withAlpha(0.75f));
+                g.setFont(juce::FontOptions(8.5f));
+            }
+
+            g.drawText(m.label,
+                       static_cast<int>(trackCenterX + 22.0f),
+                       static_cast<int>(y - 6.0f),
+                       24, 12,
+                       juce::Justification::centredLeft, false);
         }
     }
 } // namespace dsd

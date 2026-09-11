@@ -31,23 +31,24 @@ namespace dsd
         if (style != juce::Slider::LinearVertical && style != juce::Slider::LinearBarVertical)
             return;
 
-        const float trackWidth = 6.0f;
-        const float trackX = static_cast<float>(x) + (static_cast<float>(width) - trackWidth) * 0.5f;
+        const float trackCenterX = static_cast<float>(x) + static_cast<float>(width) * 0.40f;
+        const float trackWidth = 5.0f;
+        const float trackX = trackCenterX - trackWidth * 0.5f;
         const float trackY = static_cast<float>(y) + 10.0f;
         const float trackHeight = static_cast<float>(height) - 20.0f;
 
         // Draw recessed dark track slot on light console chassis
         g.setColour(juce::Colour(0xff2A2D33));
-        g.fillRoundedRectangle(trackX, trackY, trackWidth, trackHeight, 3.0f);
+        g.fillRoundedRectangle(trackX, trackY, trackWidth, trackHeight, 2.5f);
 
         // Center silver hairline guide
         g.setColour(juce::Colour(0xff5A5E66));
-        g.drawVerticalLine(static_cast<int>(trackX + trackWidth * 0.5f), trackY + 2.0f, trackY + trackHeight - 2.0f);
+        g.drawVerticalLine(static_cast<int>(trackCenterX), trackY + 2.0f, trackY + trackHeight - 2.0f);
 
         // Draw broadcast console fader cap (metallic finish)
-        const float capWidth = static_cast<float>(width) * 0.72f;
+        const float capWidth = 28.0f;
         const float capHeight = 30.0f;
-        const float capX = static_cast<float>(x) + (static_cast<float>(width) - capWidth) * 0.5f;
+        const float capX = trackCenterX - capWidth * 0.5f;
         const float capY = std::clamp(sliderPos - (capHeight * 0.5f), trackY, trackY + trackHeight - capHeight);
 
         // Drop shadow under fader cap

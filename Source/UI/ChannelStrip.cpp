@@ -80,6 +80,15 @@ namespace dsd
         addAndMakeVisible(channelNameLabel);
     }
 
+    ChannelStrip::~ChannelStrip()
+    {
+        if (activeRackWindow != nullptr)
+        {
+            activeRackWindow->setVisible(false);
+            delete activeRackWindow.getComponent();
+        }
+    }
+
     void ChannelStrip::refreshDeviceList()
     {
         inputDeviceSelector.clear(juce::dontSendNotification);
@@ -309,18 +318,13 @@ namespace dsd
 
     void ChannelStrip::openVstRackWindow()
     {
-        auto rackComp = std::make_unique<PluginRackDialog>(channelRef);
+        if (activeRackWindow != nullptr)
+        {
+            activeRackWindow->toFront(true);
+            return;
+        }
 
-        juce::DialogWindow::LaunchOptions opts;
-        opts.content.setOwned(rackComp.release());
-        opts.dialogTitle = "DSD Mixer - " + channelNameLabel.getText() + " VST3 Rack";
-        opts.componentToCentreAround = this;
-        opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
-        opts.escapeKeyTriggersCloseButton = true;
-        opts.useNativeTitleBar = true;
-        opts.resizable = true;
-
-        opts.launchAsync();
+        activeRackWindow = new PluginRackWindow("DSD Mixer - " + channelNameLabel.getText() + " VST3 Rack", channelRef);
     }
 
     void ChannelStrip::updateMeterFromAudio()

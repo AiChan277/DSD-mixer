@@ -7,6 +7,8 @@ namespace dsd
     PluginRackDialog::PluginRackDialog(AudioChannel& channel)
         : channelRef(channel)
     {
+        PluginManager::getInstance().addListener(this);
+
         titleLabel.setText(juce::String(channelRef.getName()) + " - VST3 Plugin Rack", juce::dontSendNotification);
         titleLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
         titleLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
@@ -20,6 +22,12 @@ namespace dsd
         scanFolderBtn.onClick = [this]() { onScanFolderClicked(); };
         addAndMakeVisible(scanFolderBtn);
 
+        scanStatusLabel.setFont(juce::FontOptions(11.0f));
+        scanStatusLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentAmber());
+        if (PluginManager::getInstance().isScanning())
+            scanStatusLabel.setText("Scanning VST3 plugins in background...", juce::dontSendNotification);
+        addAndMakeVisible(scanStatusLabel);
+
         totalLatencyLabel.setText("Total Latency: 0 samples (0.00 ms)", juce::dontSendNotification);
         totalLatencyLabel.setFont(juce::FontOptions(11.0f));
         totalLatencyLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
@@ -31,6 +39,24 @@ namespace dsd
 
         refreshList();
         setSize(520, 420);
+    }
+
+    PluginRackDialog::~PluginRackDialog()
+    {
+        PluginManager::getInstance().removeListener(this);
+    }
+
+    void PluginRackDialog::pluginListChanged()
+    {
+        scanFolderBtn.setEnabled(true);
+        scanStatusLabel.setText("Plugins updated (" + juce::String(PluginManager::getInstance().getNumKnownPlugins()) + " available)",
+                                juce::dontSendNotification);
+    }
+
+    void PluginRackDialog::scanProgressUpdated(const juce::String& pluginName, float /*progress*/)
+    {
+        scanStatusLabel.setText("Scanning: " + juce::File(pluginName).getFileNameWithoutExtension(),
+                                juce::dontSendNotification);
     }
 
     void PluginRackDialog::refreshList()
@@ -116,12 +142,17 @@ namespace dsd
 
     void PluginRackDialog::onAddPluginClicked()
     {
-        // 1. Check known scanned plugins first
         auto& pm = PluginManager::getInstance();
         const auto& list = pm.getKnownPluginList();
 
         juce::PopupMenu menu;
         auto types = list.getTypes();
+
+        if (pm.isScanning())
+        {
+            menu.addItem(-1, "[ VST3 background scan running... ]", false);
+            menu.addSeparator();
+        }
 
         if (types.isEmpty())
         {
@@ -131,11 +162,35 @@ namespace dsd
         }
         else
         {
+            // Group by Manufacturer
+            std::map<juce::String, std::vector<int>> mfgMap;
             for (int i = 0; i < types.size(); ++i)
             {
-                menu.addItem(100 + i, types[i].name + " (" + types[i].manufacturerName + ")");
+                auto mfg = types[i].manufacturerName.trim();
+                if (mfg.isEmpty()) mfg = "Standard VST3";
+                mfgMap[mfg].push_back(i);
             }
+
+            for (auto& [mfg, indices] : mfgMap)
+            {
+                if (indices.size() == 1)
+                {
+                    int idx = indices[0];
+                    menu.addItem(100 + idx, types[idx].name + " (" + mfg + ")");
+                }
+                else
+                {
+                    juce::PopupMenu sub;
+                    for (int idx : indices)
+                    {
+                        sub.addItem(100 + idx, types[idx].name);
+                    }
+                    menu.addSubMenu(mfg, sub);
+                }
+            }
+
             menu.addSeparator();
+            menu.addItem(1, "Rescan VST3 Plugins Now...");
             menu.addItem(2, "Browse .vst3 File on Disk...");
         }
 
@@ -194,27 +249,31 @@ namespace dsd
 
     void PluginRackDialog::onScanFolderClicked()
     {
-        PluginManager::getInstance().scanDefaultVST3Folders();
-        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
-            "VST3 Scan Complete",
-            "Scanned VST3 directory. Found " + juce::String(PluginManager::getInstance().getKnownPluginList().getNumTypes()) + " plugins.",
-            "OK");
+        scanFolderBtn.setEnabled(false);
+        scanStatusLabel.setText("Scanning VST3 plugins...", juce::dontSendNotification);
+        PluginManager::getInstance().rescanAllAsync([this](int totalFound)
+        {
+            scanFolderBtn.setEnabled(true);
+            scanStatusLabel.setText("Scan complete. Found " + juce::String(totalFound) + " plugins.", juce::dontSendNotification);
+        });
     }
 
     void PluginRackDialog::resized()
     {
         auto bounds = getLocalBounds().reduced(14, 12);
         titleLabel.setBounds(bounds.removeFromTop(24));
-        bounds.removeFromTop(8);
+        bounds.removeFromTop(6);
 
         auto btnRow = bounds.removeFromTop(28);
         addPluginBtn.setBounds(btnRow.removeFromLeft(160));
         btnRow.removeFromLeft(8);
-        scanFolderBtn.setBounds(btnRow.removeFromLeft(150));
+        scanFolderBtn.setBounds(btnRow.removeFromLeft(140));
+        btnRow.removeFromLeft(8);
+        scanStatusLabel.setBounds(btnRow);
 
-        bounds.removeFromTop(8);
+        bounds.removeFromTop(6);
         totalLatencyLabel.setBounds(bounds.removeFromTop(18));
-        bounds.removeFromTop(8);
+        bounds.removeFromTop(6);
 
         viewport.setBounds(bounds);
     }
@@ -224,5 +283,22 @@ namespace dsd
         g.fillAll(DSDLookAndFeel::getConsoleDarkBg());
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.drawRect(getLocalBounds(), 1);
+    }
+
+    PluginRackWindow::PluginRackWindow(const juce::String& title, AudioChannel& channel)
+        : DocumentWindow(title, DSDLookAndFeel::getConsoleDarkBg(), DocumentWindow::closeButton, true)
+    {
+        setUsingNativeTitleBar(true);
+        setContentOwned(new PluginRackDialog(channel), true);
+        setResizable(true, false);
+        centreWithSize(560, 440);
+        toFront(true);
+        setVisible(true);
+    }
+
+    void PluginRackWindow::closeButtonPressed()
+    {
+        setVisible(false);
+        delete this;
     }
 } // namespace dsd

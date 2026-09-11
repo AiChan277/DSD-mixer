@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include <juce_gui_basics/juce_gui_basics.h>
 #include <vector>
 #include <memory>
 #include <mutex>
@@ -14,6 +15,7 @@ namespace dsd
         juce::String name;
         std::atomic<bool> bypassed{false};
         std::atomic<int> latencySamples{0};
+        juce::Component::SafePointer<juce::DocumentWindow> activeEditorWindow;
     };
 
     class PluginRack

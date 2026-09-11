@@ -1,5 +1,6 @@
 #include "Application/DSDApplication.h"
 #include "Audio/MultiDeviceManager.h"
+#include "Plugin/PluginManager.h"
 
 namespace dsd
 {
@@ -15,10 +16,13 @@ namespace dsd
         // 3. Initialize Multi-Device Manager for Windows Audio streams
         MultiDeviceManager::getInstance().initialize(deviceManager->getJuceManager());
 
-        // 4. Register audio engine as the real-time device callback
+        // 4. Auto-scan VST3 plugins in the background
+        PluginManager::getInstance().startBackgroundAutoScan();
+
+        // 5. Register audio engine as the real-time device callback
         deviceManager->addAudioCallback(audioEngine.get());
 
-        // 5. Create Main GUI Window
+        // 6. Create Main GUI Window
         mainWindow = std::make_unique<MainWindow>(getApplicationName(), *deviceManager, *audioEngine);
     }
 

@@ -33,8 +33,16 @@ namespace dsd
         std::lock_guard<std::mutex> lock(rackMutex);
         for (auto& slot : slots)
         {
-            if (slot != nullptr && slot->instance != nullptr)
-                slot->instance->releaseResources();
+            if (slot != nullptr)
+            {
+                if (slot->activeEditorWindow != nullptr)
+                {
+                    slot->activeEditorWindow->setVisible(false);
+                    delete slot->activeEditorWindow.getComponent();
+                }
+                if (slot->instance != nullptr)
+                    slot->instance->releaseResources();
+            }
         }
     }
 
@@ -101,6 +109,12 @@ namespace dsd
         std::lock_guard<std::mutex> lock(rackMutex);
         if (index >= 0 && index < static_cast<int>(slots.size()))
         {
+            if (slots[index]->activeEditorWindow != nullptr)
+            {
+                slots[index]->activeEditorWindow->setVisible(false);
+                delete slots[index]->activeEditorWindow.getComponent();
+            }
+
             if (slots[index]->instance != nullptr)
                 slots[index]->instance->releaseResources();
 
@@ -155,35 +169,49 @@ namespace dsd
         return total;
     }
 
-    void PluginRack::openPluginEditor(int index)
+    class PluginEditorWindow : public juce::DocumentWindow
     {
-        juce::AudioPluginInstance* instance = nullptr;
-        juce::String pluginName;
+    public:
+        PluginEditorWindow(const juce::String& title, juce::AudioProcessorEditor* editor)
+            : DocumentWindow(title, juce::Colour(0xff22252a), DocumentWindow::closeButton, true)
         {
-            std::lock_guard<std::mutex> lock(rackMutex);
-            if (index >= 0 && index < static_cast<int>(slots.size()) && slots[index]->instance != nullptr)
-            {
-                instance = slots[index]->instance.get();
-                pluginName = slots[index]->name;
-            }
+            setUsingNativeTitleBar(true);
+            setContentOwned(editor, true);
+            setResizable(editor->isResizable(), false);
+            centreWithSize(editor->getWidth(), editor->getHeight());
+            toFront(true);
+            setVisible(true);
         }
 
-        if (instance == nullptr)
+        void closeButtonPressed() override
+        {
+            setVisible(false);
+            delete this;
+        }
+    };
+
+    void PluginRack::openPluginEditor(int index)
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        if (index < 0 || index >= static_cast<int>(slots.size()) || slots[index] == nullptr)
             return;
 
-        // If plugin has custom editor GUI, open it in a DocumentWindow
-        auto* editor = instance->createEditorIfNeeded();
+        auto* slot = slots[index].get();
+        if (slot->instance == nullptr)
+            return;
+
+        if (slot->activeEditorWindow != nullptr)
+        {
+            slot->activeEditorWindow->toFront(true);
+            slot->activeEditorWindow->grabKeyboardFocus();
+            return;
+        }
+
+        auto* editor = slot->instance->createEditorIfNeeded();
         if (editor != nullptr)
         {
-            auto* window = new juce::DocumentWindow(pluginName,
-                                                    juce::Colour(0xff22252a),
-                                                    juce::DocumentWindow::closeButton,
-                                                    true);
-            window->setContentOwned(editor, true);
-            window->setResizable(editor->isResizable(), false);
-            window->setUsingNativeTitleBar(true);
-            window->centreWithSize(editor->getWidth(), editor->getHeight());
-            window->setVisible(true);
+            auto* window = new PluginEditorWindow(slot->name, editor);
+            slot->activeEditorWindow = window;
         }
     }
 } // namespace dsd
