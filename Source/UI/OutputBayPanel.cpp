@@ -6,14 +6,6 @@ namespace dsd
     OutputBayPanel::OutputBayPanel(OutputManager& outManager, juce::AudioDeviceManager& deviceManager)
         : outputManagerRef(outManager), devMgrRef(deviceManager)
     {
-        headerLabel.setText("OUTPUT BAYS (4 CHANNELS)", juce::dontSendNotification);
-        headerLabel.setJustificationType(juce::Justification::centred);
-        headerLabel.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-        headerLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
-        headerLabel.setColour(juce::Label::outlineColourId, DSDLookAndFeel::getAccentRed());
-        headerLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
-        addAndMakeVisible(headerLabel);
-
         const int numOutputs = outputManagerRef.getNumOutputs();
         for (int i = 0; i < numOutputs; ++i)
         {
@@ -35,11 +27,18 @@ namespace dsd
         }
     }
 
+    void OutputBayPanel::updateAllUI()
+    {
+        for (auto& strip : outputStrips)
+        {
+            if (strip != nullptr)
+                strip->updateUIFromBus();
+        }
+    }
+
     void OutputBayPanel::resized()
     {
         auto bounds = getLocalBounds().reduced(2, 2);
-        headerLabel.setBounds(bounds.removeFromTop(22));
-        bounds.removeFromTop(6);
 
         const int numStrips = static_cast<int>(outputStrips.size());
         if (numStrips <= 0) return;

@@ -8,7 +8,9 @@
 #include "Routing/RoutingEngine.h"
 #include "Bus/BusManager.h"
 #include "Output/OutputManager.h"
+#include "Audio/WindowAudioCapture.h"
 #include <memory>
+#include <vector>
 
 namespace dsd
 {
@@ -18,6 +20,7 @@ namespace dsd
         AudioEngine();
         ~AudioEngine() override;
 
+        void prepare(double sampleRate, int maxBlockSize, int numInputs = 2);
         void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
         void audioDeviceStopped() override;
         void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
@@ -47,6 +50,20 @@ namespace dsd
 
         double getCurrentSampleRate() const noexcept { return currentSampleRate; }
         int getCurrentBlockSize() const noexcept { return currentBlockSize; }
+
+        std::vector<CaptureDiagnostics> getActiveCaptureDiagnostics() const;
+        double getEstimatedOutputLatencyMs() const noexcept;
+        double getDspBlockMs() const noexcept;
+        double getDspExecutionTimeMs() const noexcept { return perfStats.processingTimeMs.load(std::memory_order_relaxed); }
+
+        void setCaptureLatencyMode(CaptureLatencyMode mode);
+        CaptureLatencyMode getCaptureLatencyMode() const noexcept;
+
+        int getActiveWorkerCount() const noexcept { return dspScheduler.getActiveWorkerCount(); }
+        int getMaxWorkerCount() const noexcept { return dspScheduler.getMaxWorkers(); }
+        float getSchedulerEmaLoad() const noexcept { return dspScheduler.getEmaLoadRatio(); }
+
+        void resetPerformanceMetrics() noexcept { perfStats.resetMetrics(); }
 
     private:
         ChannelManager channelManager;

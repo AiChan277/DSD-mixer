@@ -31,6 +31,11 @@ namespace dsd
 
         addAndMakeVisible(outputBayPanel);
 
+        topBar.onSessionLoaded = [this]()
+        {
+            updateAllUI();
+        };
+
         startTimerHz(45);
         setSize(1360, 720);
     }
@@ -39,6 +44,16 @@ namespace dsd
     {
         stopTimer();
         setLookAndFeel(nullptr);
+    }
+
+    void MainView::updateAllUI()
+    {
+        for (auto& strip : channelStrips)
+        {
+            if (strip != nullptr)
+                strip->updateUIFromChannel();
+        }
+        outputBayPanel.updateAllUI();
     }
 
     void MainView::timerCallback()
@@ -71,14 +86,19 @@ namespace dsd
         const int numStrips = static_cast<int>(channelStrips.size());
         const int totalWidth = numStrips * stripWidth + (numStrips - 1) * stripGap;
 
-        channelsContainer.setBounds(0, 0, std::max(totalWidth, bounds.getWidth()), bounds.getHeight());
+        // Viewport scrollbar height is 16px when horizontal scrollbar is shown
+        const bool willShowScrollbar = (totalWidth > bounds.getWidth());
+        const int scrollbarPad = willShowScrollbar ? 16 : 0;
+        const int availableHeight = bounds.getHeight() - scrollbarPad;
+
+        channelsContainer.setBounds(0, 0, std::max(totalWidth, bounds.getWidth()), availableHeight);
 
         int currentX = 0;
         for (auto& strip : channelStrips)
         {
             if (strip != nullptr)
             {
-                strip->setBounds(currentX, 0, stripWidth, bounds.getHeight());
+                strip->setBounds(currentX, 0, stripWidth, availableHeight);
                 currentX += stripWidth + stripGap;
             }
         }

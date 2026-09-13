@@ -75,7 +75,7 @@ namespace dsd
         {
             if (numSamples <= 0 || dst == nullptr) return 0;
 
-            // In pre-roll mode: output clean silence while cushion builds up
+            // In pre-roll mode: output clean silence while initial cushion builds up
             if (isBuffering.load(std::memory_order_acquire))
             {
                 if (fifo.getNumReady() >= preRollSamples)
@@ -94,7 +94,7 @@ namespace dsd
             }
 
             // Adaptive clock drift adjustment:
-            // If cushion exceeds 3072 samples (~64ms), gently trim 4 samples to prevent latency buildup
+            // If cushion exceeds 4096 samples (~85ms), gently trim 4 samples to prevent latency buildup
             const int readyBefore = fifo.getNumReady();
             if (readyBefore > maxComfortCushion)
             {
@@ -127,7 +127,6 @@ namespace dsd
             fifo.finishedRead(readTotal);
 
             // Glitch-free underflow recovery: zero-fill only missing samples of THIS block
-            // NEVER cut to an arbitrary 21ms blackout on a 1-sample deficit!
             if (readTotal < numSamples)
             {
                 for (int ch = 0; ch < numChannels; ++ch)
@@ -145,10 +144,13 @@ namespace dsd
                         juce::FloatVectorOperations::clear(dst[ch] + readTotal, numSamples - readTotal);
                     }
                 }
+            }
 
-                // Only re-enter buffering mode if device has stopped sending audio for 30+ blocks (~100ms)
-                int underruns = consecutiveUnderruns.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (underruns >= 30)
+            // Only re-enter buffering mode if COMPLETELY DRY (readTotal == 0) for 100 consecutive blocks (~250ms)
+            if (readTotal == 0)
+            {
+                int dryCount = consecutiveUnderruns.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (dryCount >= 100)
                 {
                     isBuffering.store(true, std::memory_order_release);
                 }
@@ -168,8 +170,8 @@ namespace dsd
         juce::AudioBuffer<float> buffer;
         std::atomic<bool> isBuffering{true};
         std::atomic<int> consecutiveUnderruns{0};
-        static constexpr int preRollSamples = 1024;    // ~21ms cushion
-        static constexpr int maxComfortCushion = 3072; // ~64ms cushion upper limit
+        static constexpr int preRollSamples = 256;     // ~5.3ms initial cushion
+        static constexpr int maxComfortCushion = 4096; // ~85ms cushion upper limit
     };
 
     // Dedicated input source capturing from a specific Windows audio device

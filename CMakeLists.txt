@@ -25,6 +25,8 @@ target_sources(DSDMixer PRIVATE
     Source/Application/DSDApplication.h
     Source/Application/DSDApplication.cpp
     Source/Audio/AudioTypes.h
+    Source/Audio/ProcessCpuTracker.h
+    Source/Audio/ProcessCpuTracker.cpp
     Source/Audio/AudioInputSource.h
     Source/Audio/WindowAudioCapture.h
     Source/Audio/WindowAudioCapture.cpp
@@ -116,6 +118,8 @@ target_link_libraries(DSDMixer PRIVATE
     juce::juce_audio_formats
     juce::juce_audio_processors
     juce::juce_audio_utils
+    avrt
+    winmm
 )
 
 # Automated test target for DSP, 16x4 routing, and multicore engine
@@ -132,6 +136,8 @@ add_executable(AudioEngineTests
     Source/Output/OutputManager.cpp
     Source/Plugin/PluginRack.cpp
     Source/Plugin/PluginManager.cpp
+    Source/Audio/AudioEngine.cpp
+    Source/Audio/ProcessCpuTracker.cpp
     Source/Session/SessionManager.cpp
     Source/Audio/AudioDeviceManager.cpp
     Source/Audio/MultiDeviceManager.cpp
@@ -153,4 +159,6 @@ target_link_libraries(AudioEngineTests PRIVATE
     juce::juce_audio_basics
     juce::juce_audio_devices
     juce::juce_audio_processors
+    avrt
+    winmm
 )

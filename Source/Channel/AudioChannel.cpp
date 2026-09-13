@@ -30,6 +30,7 @@ namespace dsd
 
         pluginRack.prepare(sampleRate, maxBlockSize);
 
+        std::lock_guard<std::mutex> lock(sourceMutex);
         if (inputSource != nullptr)
             inputSource->prepare(sampleRate, maxBlockSize);
     }
@@ -44,6 +45,7 @@ namespace dsd
         meterProcessor.reset();
         pluginRack.releaseResources();
 
+        std::lock_guard<std::mutex> lock(sourceMutex);
         if (inputSource != nullptr)
             inputSource->releaseResources();
     }
@@ -68,9 +70,15 @@ namespace dsd
 
     void AudioChannel::setInputSource(std::unique_ptr<AudioInputSource> source)
     {
-        inputSource = std::move(source);
-        if (inputSource != nullptr && isPrepared)
-            inputSource->prepare(currentSampleRate, currentBlockSize);
+        std::unique_ptr<AudioInputSource> oldSource;
+        {
+            std::lock_guard<std::mutex> lock(sourceMutex);
+            oldSource = std::move(inputSource);
+            inputSource = std::move(source);
+            if (inputSource != nullptr && isPrepared)
+                inputSource->prepare(currentSampleRate, currentBlockSize);
+        }
+        // oldSource is destroyed here outside the lock safely
     }
 
     void AudioChannel::processBlock(const juce::AudioBuffer<float>& deviceInputBuffer, int numSamples)
@@ -81,11 +89,14 @@ namespace dsd
         if (channelBuffer.getNumSamples() < numSamples)
             channelBuffer.setSize(2, std::max(currentBlockSize, numSamples), false, true, true);
 
-        // 1. Stage A: Input Acquisition
-        if (inputSource != nullptr)
-            inputSource->readBlock(channelBuffer, deviceInputBuffer, numSamples);
-        else
-            channelBuffer.clear(0, numSamples);
+        // 1. Stage A: Input Acquisition (Lock-free non-blocking try_lock)
+        {
+            std::unique_lock<std::mutex> lock(sourceMutex, std::try_to_lock);
+            if (lock.owns_lock() && inputSource != nullptr)
+                inputSource->readBlock(channelBuffer, deviceInputBuffer, numSamples);
+            else
+                channelBuffer.clear(0, numSamples);
+        }
 
         // Meter Stage A (Raw Input)
         meterInputProc.processBlock(channelBuffer.getReadPointer(0),

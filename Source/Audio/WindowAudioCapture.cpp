@@ -8,6 +8,8 @@
 #include <audioclient.h>
 #include <audioclientactivationparams.h>
 #include <audiopolicy.h>
+#include <avrt.h>
+#include <timeapi.h>
 #include <psapi.h>
 #include <propvarutil.h>
 #include <dwmapi.h>
@@ -18,22 +20,36 @@
 #pragma comment(lib, "mmdevapi.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "avrt.lib")
+#pragma comment(lib, "winmm.lib")
+
+#ifndef AUDCLNT_STREAMOPTIONS_RAW
+#define AUDCLNT_STREAMOPTIONS_RAW 0x1
+#endif
 
 namespace dsd
 {
     // =========================================================================
     // COM Async Activation Handler for Process Loopback
     // =========================================================================
-    class ActivateAudioInterfaceCompletionHandler : public IActivateAudioInterfaceCompletionHandler
+    class ActivateAudioInterfaceCompletionHandler
+        : public IActivateAudioInterfaceCompletionHandler,
+          public IAgileObject
     {
     public:
         ActivateAudioInterfaceCompletionHandler()
             : refCount(1), completedEvent(CreateEvent(nullptr, TRUE, FALSE, nullptr))
         {
+            CoCreateFreeThreadedMarshaler(static_cast<IActivateAudioInterfaceCompletionHandler*>(this), &ftm);
         }
 
         ~ActivateAudioInterfaceCompletionHandler()
         {
+            if (ftm != nullptr)
+            {
+                ftm->Release();
+                ftm = nullptr;
+            }
             if (unk != nullptr)
             {
                 unk->Release();
@@ -54,6 +70,16 @@ namespace dsd
                 *ppv = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
                 AddRef();
                 return S_OK;
+            }
+            if (riid == __uuidof(IAgileObject))
+            {
+                *ppv = static_cast<IAgileObject*>(this);
+                AddRef();
+                return S_OK;
+            }
+            if (riid == __uuidof(IMarshal) && ftm != nullptr)
+            {
+                return ftm->QueryInterface(riid, ppv);
             }
             *ppv = nullptr;
             return E_NOINTERFACE;
@@ -85,6 +111,7 @@ namespace dsd
         HANDLE completedEvent{nullptr};
         HRESULT hrActivateResult{E_FAIL};
         IUnknown* unk{nullptr};
+        IUnknown* ftm{nullptr};
 
     private:
         ULONG refCount;
@@ -103,9 +130,43 @@ namespace dsd
         releaseResources();
     }
 
-    void WindowAudioCapture::prepare(double sampleRate, int /*maxBlockSize*/)
+    int WindowAudioCapture::calculateTargetOccupancy(CaptureLatencyMode mode, int blockSize, double sampleRate) const
+    {
+        const double rateScale = (sampleRate > 1000.0) ? (sampleRate / 48000.0) : 1.0;
+        switch (mode)
+        {
+            case CaptureLatencyMode::UltraLow:
+                // Trough cushion ~2.67 ms (128 frames) - lowest stable empirical occupancy without XRUNs
+                return static_cast<int>(std::round(std::max(128.0 * rateScale, static_cast<double>(blockSize))));
+            case CaptureLatencyMode::Low:
+                // Trough cushion ~4.0 ms (192 frames) - optimal balance of low latency & jitter immunity
+                return static_cast<int>(std::round(std::max(192.0 * rateScale, static_cast<double>(blockSize) + 64.0 * rateScale)));
+            case CaptureLatencyMode::Standard:
+            default:
+                // Trough cushion ~8.0 ms (384 frames) - safe jitter tolerance
+                return static_cast<int>(std::round(std::max(384.0 * rateScale, static_cast<double>(blockSize) + 256.0 * rateScale)));
+        }
+    }
+
+    void WindowAudioCapture::setLatencyMode(CaptureLatencyMode mode)
+    {
+        latencyMode.store(mode, std::memory_order_relaxed);
+        const int targetOcc = calculateTargetOccupancy(mode, currentMaxBlockSize, targetSampleRate);
+        ringBuffer.setTargetOccupancy(targetOcc);
+    }
+
+    void WindowAudioCapture::setGlobalLatencyMode(CaptureLatencyMode mode)
+    {
+        globalLatencyMode.store(mode, std::memory_order_relaxed);
+    }
+
+    void WindowAudioCapture::prepare(double sampleRate, int maxBlockSize)
     {
         targetSampleRate = (sampleRate > 1000.0) ? sampleRate : 48000.0;
+        currentMaxBlockSize = (maxBlockSize > 0) ? maxBlockSize : 256;
+        latencyMode.store(globalLatencyMode.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        const int targetOcc = calculateTargetOccupancy(latencyMode.load(std::memory_order_relaxed), currentMaxBlockSize, targetSampleRate);
+        ringBuffer.setTargetOccupancy(targetOcc);
 
         shouldStop.store(true);
         if (captureThread.joinable())
@@ -138,13 +199,62 @@ namespace dsd
             return;
         }
 
-        ringBuffer.read(targetBuffer.getArrayOfWritePointers(), targetBuffer.getNumChannels(), numSamples);
+        ringBuffer.read(targetBuffer.getArrayOfWritePointers(), targetBuffer.getNumChannels(), numSamples, targetSampleRate);
+    }
+
+    CaptureDiagnostics WindowAudioCapture::getDiagnostics() const
+    {
+        CaptureDiagnostics diag;
+        diag.processId = pid;
+        diag.appName = procName;
+        diag.isCapturing = isRunning.load(std::memory_order_relaxed);
+        diag.captureSampleRate = captureSampleRate;
+        diag.captureChannels = captureChannels;
+        diag.bitsPerSample = bitsPerSample;
+        diag.isFloat = isNativeFloat;
+
+        diag.latencyMode = latencyMode.load(std::memory_order_relaxed);
+        switch (diag.latencyMode)
+        {
+            case CaptureLatencyMode::UltraLow: diag.latencyModeName = "Ultra-Low (2.7ms FIFO)"; break;
+            case CaptureLatencyMode::Low:      diag.latencyModeName = "Low (4.0ms FIFO)"; break;
+            case CaptureLatencyMode::Standard: diag.latencyModeName = "Standard (8.0ms FIFO)"; break;
+        }
+
+        diag.wasapiBufferFrames = wasapiBufferFrames.load(std::memory_order_relaxed);
+        diag.wasapiBufferMs = (captureSampleRate > 0) ? (static_cast<double>(diag.wasapiBufferFrames) / captureSampleRate * 1000.0) : 0.0;
+        diag.wasapiPeriodMs = wasapiPeriodMs.load(std::memory_order_relaxed);
+
+        diag.ringBufferCapacity = ringBuffer.getCapacity();
+        diag.ringBufferOccupancy = ringBuffer.getNumReady();
+        diag.ringBufferOccupancyMs = (targetSampleRate > 0) ? (static_cast<double>(diag.ringBufferOccupancy) / targetSampleRate * 1000.0) : 0.0;
+        diag.targetOccupancy = ringBuffer.getTargetOccupancy();
+        diag.targetOccupancyMs = (targetSampleRate > 0) ? (static_cast<double>(diag.targetOccupancy) / targetSampleRate * 1000.0) : 0.0;
+
+        diag.smoothedOccupancy = ringBuffer.getSmoothedOccupancy();
+        diag.clockDriftPpm = ringBuffer.getClockDriftPpm();
+        diag.totalCaptureFrames = ringBuffer.getTotalFramesWritten();
+        diag.totalEngineFrames = ringBuffer.getTotalFramesRead();
+
+        diag.underrunCount = ringBuffer.getUnderrunCount();
+        diag.overrunCount = ringBuffer.getOverrunCount();
+        diag.discontinuityCount = discontinuityCount.load(std::memory_order_relaxed);
+        diag.driftCorrections = ringBuffer.getDriftCorrections();
+        diag.burstFlushedFrames = ringBuffer.getBurstFlushedFrames();
+
+        // Exact measured QPC hardware packet age (ground truth)
+        diag.hardwarePacketAgeMs = latestHardwarePacketAgeMs.load(std::memory_order_relaxed);
+        diag.estimatedCaptureLatencyMs = diag.hardwarePacketAgeMs + diag.ringBufferOccupancyMs;
+        return diag;
     }
 
     bool WindowAudioCapture::activateProcessLoopback(IAudioClient** outClient)
     {
         if (outClient == nullptr || pid == 0)
+        {
+            DBG("[WindowAudioCapture] activateProcessLoopback invalid args: pid=" << (int)pid);
             return false;
+        }
 
         *outClient = nullptr;
 
@@ -170,6 +280,7 @@ namespace dsd
 
         if (FAILED(hr))
         {
+            DBG("[WindowAudioCapture] ActivateAudioInterfaceAsync failed: 0x" << juce::String::toHexString((juce::uint32)hr));
             handler->Release();
             return false;
         }
@@ -178,11 +289,14 @@ namespace dsd
         DWORD waitRes = WaitForSingleObject(handler->completedEvent, 3000);
         if (waitRes != WAIT_OBJECT_0)
         {
+            DBG("[WindowAudioCapture] WaitForSingleObject timeout waitRes=" << (int)waitRes);
             if (asyncOp != nullptr)
                 asyncOp->Release();
             handler->Release();
             return false;
         }
+
+        DBG("[WindowAudioCapture] Activation completed! hrActivateResult=0x" << juce::String::toHexString((juce::uint32)handler->hrActivateResult));
 
         bool success = false;
         if (SUCCEEDED(handler->hrActivateResult) && handler->unk != nullptr)
@@ -199,8 +313,30 @@ namespace dsd
         return success;
     }
 
+    struct MmcssScope
+    {
+        MmcssScope()
+        {
+            timeBeginPeriod(1);
+            DWORD taskIndex = 0;
+            hTask = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+            if (hTask != nullptr)
+                AvSetMmThreadPriority(hTask, AVRT_PRIORITY_CRITICAL);
+            else
+                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+        }
+        ~MmcssScope()
+        {
+            if (hTask != nullptr)
+                AvRevertMmThreadCharacteristics(hTask);
+            timeEndPeriod(1);
+        }
+        HANDLE hTask{nullptr};
+    };
+
     void WindowAudioCapture::threadLoop()
     {
+        MmcssScope mmcss;
         HRESULT hrCo = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
         IAudioClient* client = nullptr;
@@ -210,6 +346,20 @@ namespace dsd
             if (SUCCEEDED(hrCo))
                 CoUninitialize();
             return;
+        }
+
+        // 0. Set RAW stream properties on IAudioClient2 if available to bypass Windows DSP/APOs
+        IAudioClient2* client2 = nullptr;
+        if (SUCCEEDED(client->QueryInterface(__uuidof(IAudioClient2), reinterpret_cast<void**>(&client2))) && client2 != nullptr)
+        {
+            AudioClientProperties prop = {};
+            prop.cbSize = sizeof(AudioClientProperties);
+            prop.bIsOffload = FALSE;
+            prop.eCategory = AudioCategory_Media;
+            prop.Options = static_cast<AUDCLNT_STREAMOPTIONS>(AUDCLNT_STREAMOPTIONS_RAW);
+            HRESULT hrProp = client2->SetClientProperties(&prop);
+            DBG("[WindowAudioCapture] SetClientProperties(RAW) result: 0x" << juce::String::toHexString((juce::uint32)hrProp));
+            client2->Release();
         }
 
         // ---------------------------------------------------------------------
@@ -278,14 +428,16 @@ namespace dsd
         };
 
         std::vector<FormatCandidate> candidates;
+        // Prioritize native 32-bit Float (48 kHz & device mix format) for 1:1 bit-exact capture with zero conversion
         candidates.push_back({ reinterpret_cast<const WAVEFORMATEX*>(&wfxFloat48), true });
         if (pDevWfx != nullptr)
         {
             bool devIsFloat = (pDevWfx->wFormatTag == WAVE_FORMAT_IEEE_FLOAT ||
                                (pDevWfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-                                reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pDevWfx)->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
+                                 reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(pDevWfx)->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT));
             candidates.push_back({ pDevWfx, devIsFloat });
         }
+        // Fallbacks if native float is not accepted
         candidates.push_back({ &wfxPcm16_48, false });
         candidates.push_back({ &wfxPcm16_44, false });
 
@@ -295,46 +447,99 @@ namespace dsd
 
         const DWORD flagSets[] = {
             AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK
         };
 
-        const REFERENCE_TIME bufferDurations[] = { 0, 2000000 }; // 0 = automatic engine buffer, 200ms fallback
-
-        for (const auto& candidate : candidates)
+        // Check device period limits to negotiate minimum latency
+        REFERENCE_TIME defaultPeriod = 0, minPeriod = 0;
+        if (SUCCEEDED(client->GetDevicePeriod(&defaultPeriod, &minPeriod)) && defaultPeriod > 0)
         {
-            for (DWORD flags : flagSets)
-            {
-                for (REFERENCE_TIME hnsBuffer : bufferDurations)
-                {
-                    HRESULT hrInit = client->Initialize(
-                        AUDCLNT_SHAREMODE_SHARED,
-                        flags,
-                        hnsBuffer,
-                        0,
-                        candidate.pwfx,
-                        nullptr);
+            wasapiPeriodMs.store(static_cast<double>(defaultPeriod) / 10000.0, std::memory_order_relaxed);
+        }
+        else
+        {
+            wasapiPeriodMs.store(10.0, std::memory_order_relaxed);
+        }
 
-                    if (SUCCEEDED(hrInit))
+        // Try IAudioClient3 for true low-latency engine period if supported
+        IAudioClient3* client3 = nullptr;
+        if (SUCCEEDED(client->QueryInterface(__uuidof(IAudioClient3), reinterpret_cast<void**>(&client3))) && client3 != nullptr)
+        {
+            for (const auto& candidate : candidates)
+            {
+                for (DWORD flags : flagSets)
+                {
+                    UINT32 defP = 0, fundP = 0, minP = 0, maxP = 0;
+                    if (SUCCEEDED(client3->GetSharedModeEnginePeriod(candidate.pwfx, &defP, &fundP, &minP, &maxP)) && minP > 0)
                     {
-                        if (candidate.pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+                        if (SUCCEEDED(client3->InitializeSharedAudioStream(flags, minP, candidate.pwfx, nullptr)))
                         {
-                            memcpy(&activeFormatExt, candidate.pwfx, sizeof(WAVEFORMATEXTENSIBLE));
+                            if (candidate.pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+                                memcpy(&activeFormatExt, candidate.pwfx, sizeof(WAVEFORMATEXTENSIBLE));
+                            else
+                            {
+                                memcpy(&activeFormatExt.Format, candidate.pwfx, sizeof(WAVEFORMATEX));
+                                activeFormatExt.Format.cbSize = 0;
+                            }
+                            activeIsFloat = candidate.isFloat;
+                            initialized = true;
+                            DBG("[WindowAudioCapture] IAudioClient3::InitializeSharedAudioStream SUCCESS with minPeriod: " << (int)minP << " frames!");
+                            break;
                         }
-                        else
-                        {
-                            memcpy(&activeFormatExt.Format, candidate.pwfx, sizeof(WAVEFORMATEX));
-                            activeFormatExt.Format.cbSize = 0;
-                        }
-                        activeIsFloat = candidate.isFloat;
-                        initialized = true;
-                        break;
                     }
                 }
                 if (initialized) break;
             }
-            if (initialized) break;
+            client3->Release();
+        }
+
+        // Fallback to IAudioClient::Initialize with aggressive low buffer durations
+        if (!initialized)
+        {
+            std::vector<REFERENCE_TIME> bufferDurations;
+            if (minPeriod > 0)
+                bufferDurations.push_back(minPeriod);
+            bufferDurations.push_back(20000);  // 2.0 ms
+            bufferDurations.push_back(30000);  // 3.0 ms
+            bufferDurations.push_back(50000);  // 5.0 ms
+            bufferDurations.push_back(100000); // 10.0 ms
+            bufferDurations.push_back(0);      // Engine automatic default
+            bufferDurations.push_back(2000000);// Safe fallback
+
+            for (const auto& candidate : candidates)
+            {
+                for (DWORD flags : flagSets)
+                {
+                    for (REFERENCE_TIME hnsBuffer : bufferDurations)
+                    {
+                        HRESULT hrInit = client->Initialize(
+                            AUDCLNT_SHAREMODE_SHARED,
+                            flags,
+                            hnsBuffer,
+                            0,
+                            candidate.pwfx,
+                            nullptr);
+
+                        if (SUCCEEDED(hrInit))
+                        {
+                            if (candidate.pwfx->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
+                            {
+                                memcpy(&activeFormatExt, candidate.pwfx, sizeof(WAVEFORMATEXTENSIBLE));
+                            }
+                            else
+                            {
+                                memcpy(&activeFormatExt.Format, candidate.pwfx, sizeof(WAVEFORMATEX));
+                                activeFormatExt.Format.cbSize = 0;
+                            }
+                            activeIsFloat = candidate.isFloat;
+                            initialized = true;
+                            break;
+                        }
+                    }
+                    if (initialized) break;
+                }
+                if (initialized) break;
+            }
         }
 
         if (pDevWfx != nullptr)
@@ -352,11 +557,29 @@ namespace dsd
             return;
         }
 
+        DBG("[WindowAudioCapture] client->Initialize SUCCESS for PID " << (int)pid << " (" << procName << ")");
+
+        // Query actual allocated buffer size and device period
+        UINT32 allocatedBufferFrames = 0;
+        if (SUCCEEDED(client->GetBufferSize(&allocatedBufferFrames)))
+        {
+            wasapiBufferFrames.store(allocatedBufferFrames, std::memory_order_relaxed);
+        }
+
+        if (SUCCEEDED(client->GetDevicePeriod(&defaultPeriod, &minPeriod)) && defaultPeriod > 0)
+        {
+            wasapiPeriodMs.store(static_cast<double>(defaultPeriod) / 10000.0, std::memory_order_relaxed);
+        }
+        else
+        {
+            wasapiPeriodMs.store(10.0, std::memory_order_relaxed);
+        }
+
         HANDLE hEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
         HRESULT hr = client->SetEventHandle(hEvent);
         if (FAILED(hr))
         {
-            DBG("[WindowAudioCapture] SetEventHandle failed: 0x" << juce::String::toHexString((int)hr));
+            DBG("[WindowAudioCapture] SetEventHandle failed: 0x" << juce::String::toHexString((juce::uint32)hr));
             CloseHandle(hEvent);
             client->Release();
             if (SUCCEEDED(hrCo))
@@ -368,7 +591,7 @@ namespace dsd
         hr = client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&captureClient));
         if (FAILED(hr) || captureClient == nullptr)
         {
-            DBG("[WindowAudioCapture] GetService(IAudioCaptureClient) failed: 0x" << juce::String::toHexString((int)hr));
+            DBG("[WindowAudioCapture] GetService(IAudioCaptureClient) failed: 0x" << juce::String::toHexString((juce::uint32)hr));
             CloseHandle(hEvent);
             client->Release();
             if (SUCCEEDED(hrCo))
@@ -379,7 +602,7 @@ namespace dsd
         hr = client->Start();
         if (FAILED(hr))
         {
-            DBG("[WindowAudioCapture] client->Start() failed: 0x" << juce::String::toHexString((int)hr));
+            DBG("[WindowAudioCapture] client->Start() failed: 0x" << juce::String::toHexString((juce::uint32)hr));
             captureClient->Release();
             CloseHandle(hEvent);
             client->Release();
@@ -390,12 +613,15 @@ namespace dsd
 
         captureSampleRate = activeFormatExt.Format.nSamplesPerSec > 0 ? static_cast<double>(activeFormatExt.Format.nSamplesPerSec) : 48000.0;
         captureChannels = activeFormatExt.Format.nChannels > 0 ? activeFormatExt.Format.nChannels : 2;
-        const int bitsPerSample = activeFormatExt.Format.wBitsPerSample;
+        bitsPerSample = activeFormatExt.Format.wBitsPerSample;
+        isNativeFloat = activeIsFloat;
 
         isRunning.store(true);
-        DBG("[WindowAudioCapture] Successfully started process loopback for " << procName << " (PID: " << (int)pid << ") at "
-            << captureSampleRate << " Hz, " << captureChannels << " ch, " << bitsPerSample << " bits ("
-            << (activeIsFloat ? "float" : "int") << ")");
+        DBG("[WindowAudioCapture] Started process loopback: " << procName
+            << " (PID: " << (int)pid << ") at " << captureSampleRate << " Hz, " << captureChannels
+            << " ch, " << bitsPerSample << " bits (" << (activeIsFloat ? "Float" : "PCM")
+            << "), HW buffer: " << allocatedBufferFrames << " frames, period: "
+            << wasapiPeriodMs.load() << " ms");
 
         interpolator[0].reset();
         interpolator[1].reset();
@@ -405,33 +631,45 @@ namespace dsd
 
         while (!shouldStop.load())
         {
-            DWORD waitRes = WaitForSingleObject(hEvent, 30);
+            DWORD waitRes = WaitForSingleObject(hEvent, 20);
             if (shouldStop.load())
                 break;
 
             UINT32 packetLength = 0;
-            hr = captureClient->GetNextPacketSize(&packetLength);
-            if (FAILED(hr))
-            {
-                if (hr == AUDCLNT_E_DEVICE_INVALIDATED || hr == AUDCLNT_E_RESOURCES_INVALIDATED)
-                {
-                    DBG("[WindowAudioCapture] Device or process invalidated for " << procName);
-                    break;
-                }
-                continue;
-            }
-
-            while (packetLength > 0 && !shouldStop.load())
+            while (SUCCEEDED(captureClient->GetNextPacketSize(&packetLength)) && packetLength > 0 && !shouldStop.load())
             {
                 BYTE* pData = nullptr;
                 UINT32 numFramesRead = 0;
                 DWORD flags = 0;
+                UINT64 devPos = 0;
+                UINT64 qpcPos = 0;
 
-                hr = captureClient->GetBuffer(&pData, &numFramesRead, &flags, nullptr, nullptr);
-                if (FAILED(hr) || pData == nullptr)
+                hr = captureClient->GetBuffer(&pData, &numFramesRead, &flags, &devPos, &qpcPos);
+                if (FAILED(hr))
                     break;
 
-                if (numFramesRead > 0)
+                if (qpcPos > 0)
+                {
+                    LARGE_INTEGER qpcNow, qpcFreq;
+                    QueryPerformanceCounter(&qpcNow);
+                    QueryPerformanceFrequency(&qpcFreq);
+                    if (qpcFreq.QuadPart > 0)
+                    {
+                        double ageMs = static_cast<double>(qpcNow.QuadPart - static_cast<LONGLONG>(qpcPos)) * 1000.0 / qpcFreq.QuadPart;
+                        if (ageMs > 0.0 && ageMs < 200.0)
+                        {
+                            double prevAge = latestHardwarePacketAgeMs.load(std::memory_order_relaxed);
+                            latestHardwarePacketAgeMs.store(prevAge <= 0.1 ? ageMs : (0.95 * prevAge + 0.05 * ageMs), std::memory_order_relaxed);
+                        }
+                    }
+                }
+
+                if (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY)
+                {
+                    discontinuityCount.fetch_add(1, std::memory_order_relaxed);
+                }
+
+                if (numFramesRead > 0 && pData != nullptr)
                 {
                     if (tempCaptureBuffer.getNumSamples() < static_cast<int>(numFramesRead))
                         tempCaptureBuffer.setSize(2, numFramesRead, false, false, true);
@@ -503,6 +741,28 @@ namespace dsd
                             rightDst[i] = static_cast<float>(s1) * inv8388608;
                         }
                     }
+                    else if (!activeIsFloat && bitsPerSample == 32)
+                    {
+                        const int32_t* int32Src = reinterpret_cast<const int32_t*>(pData);
+                        constexpr float inv2147483648 = 1.0f / 2147483648.0f;
+                        if (captureChannels >= 2)
+                        {
+                            for (UINT32 i = 0; i < numFramesRead; ++i)
+                            {
+                                leftDst[i] = static_cast<float>(int32Src[i * captureChannels]) * inv2147483648;
+                                rightDst[i] = static_cast<float>(int32Src[i * captureChannels + 1]) * inv2147483648;
+                            }
+                        }
+                        else
+                        {
+                            for (UINT32 i = 0; i < numFramesRead; ++i)
+                            {
+                                float s = static_cast<float>(int32Src[i]) * inv2147483648;
+                                leftDst[i] = s;
+                                rightDst[i] = s;
+                            }
+                        }
+                    }
                     else
                     {
                         tempCaptureBuffer.clear(0, numFramesRead);
@@ -533,9 +793,6 @@ namespace dsd
                 }
 
                 captureClient->ReleaseBuffer(numFramesRead);
-                hr = captureClient->GetNextPacketSize(&packetLength);
-                if (FAILED(hr))
-                    break;
             }
         }
 

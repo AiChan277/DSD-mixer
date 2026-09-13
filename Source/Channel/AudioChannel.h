@@ -116,6 +116,7 @@ namespace dsd
         PluginRack pluginRack;
 
         std::unique_ptr<AudioInputSource> inputSource;
+        mutable std::mutex sourceMutex;
         juce::AudioBuffer<float> channelBuffer;
         juce::MidiBuffer midiBuffer;
 

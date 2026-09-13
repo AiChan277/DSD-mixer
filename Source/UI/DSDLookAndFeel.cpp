@@ -17,57 +17,100 @@ namespace dsd
         setColour(juce::PopupMenu::highlightedTextColourId, juce::Colour(0xff1A0A00));
     }
 
-    juce::Font DSDLookAndFeel::getTextButtonFont(juce::TextButton&, int buttonHeight)
+    juce::Font DSDLookAndFeel::getTextButtonFont(juce::TextButton& button, int buttonHeight)
     {
-        return juce::FontOptions(std::clamp(static_cast<float>(buttonHeight) * 0.45f, 10.0f, 12.0f), juce::Font::bold);
+        if (button.getButtonText().equalsIgnoreCase("ON"))
+            return juce::FontOptions(12.5f, juce::Font::bold);
+        return juce::FontOptions(std::clamp(static_cast<float>(buttonHeight) * 0.45f, 9.5f, 11.5f), juce::Font::bold);
     }
 
     void DSDLookAndFeel::drawLinearSlider(juce::Graphics& g,
                                          int x, int y, int width, int height,
                                          float sliderPos, float /*minSliderPos*/, float /*maxSliderPos*/,
                                          const juce::Slider::SliderStyle style,
-                                         juce::Slider& /*slider*/)
+                                         juce::Slider& slider)
     {
         if (style != juce::Slider::LinearVertical && style != juce::Slider::LinearBarVertical)
             return;
 
-        const float trackCenterX = static_cast<float>(x) + static_cast<float>(width) * 0.40f;
+        const float trackCenterX = std::floor(static_cast<float>(x) + static_cast<float>(width) * 0.50f);
         const float trackWidth = 5.0f;
         const float trackX = trackCenterX - trackWidth * 0.5f;
-        const float trackY = static_cast<float>(y) + 10.0f;
-        const float trackHeight = static_cast<float>(height) - 20.0f;
 
-        // Draw recessed dark track slot on light console chassis
-        g.setColour(juce::Colour(0xff2A2D33));
-        g.fillRoundedRectangle(trackX, trackY, trackWidth, trackHeight, 2.5f);
+        const float topPos = static_cast<float>(slider.getPositionOfValue(slider.getMaximum()));
+        const float botPos = static_cast<float>(slider.getPositionOfValue(slider.getMinimum()));
+        const float trackY = std::min(topPos, botPos);
+        const float trackHeight = std::abs(botPos - topPos);
+
+        // 1. Draw recessed dark track slot on light console chassis
+        g.setColour(juce::Colour(0xff14161A));
+        g.fillRoundedRectangle(trackX - 0.5f, trackY - 1.0f, trackWidth + 1.0f, trackHeight + 2.0f, 2.0f);
+
+        g.setColour(juce::Colour(0xff22252C));
+        g.fillRoundedRectangle(trackX, trackY, trackWidth, trackHeight, 1.5f);
 
         // Center silver hairline guide
-        g.setColour(juce::Colour(0xff5A5E66));
-        g.drawVerticalLine(static_cast<int>(trackCenterX), trackY + 2.0f, trackY + trackHeight - 2.0f);
+        g.setColour(juce::Colour(0xff555963));
+        g.drawVerticalLine(static_cast<int>(trackCenterX), trackY + 1.0f, trackY + trackHeight - 1.0f);
 
-        // Draw broadcast console fader cap (metallic finish)
-        const float capWidth = 28.0f;
-        const float capHeight = 30.0f;
+        // ========================================================================
+        // 2. Broadcast Console Fader Cap (DHD RX2/SX2 Matte Chamfered Block)
+        // ========================================================================
+        const float capWidth = 32.0f;
+        const float capHeight = 40.0f;
         const float capX = trackCenterX - capWidth * 0.5f;
-        const float capY = std::clamp(sliderPos - (capHeight * 0.5f), trackY, trackY + trackHeight - capHeight);
+        const float capY = sliderPos - capHeight * 0.5f;
 
         // Drop shadow under fader cap
-        g.setColour(juce::Colours::black.withAlpha(0.35f));
-        g.fillRoundedRectangle(capX - 1.0f, capY + 2.0f, capWidth + 2.0f, capHeight, 3.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.38f));
+        g.fillRoundedRectangle(capX - 2.0f, capY + 3.0f, capWidth + 4.0f, capHeight, 3.5f);
 
-        // Metallic brushed aluminum cap gradient
-        juce::ColourGradient capGrad(juce::Colour(0xff7A7E88), capX, capY,
-                                     juce::Colour(0xff4A4D55), capX, capY + capHeight, false);
-        g.setGradientFill(capGrad);
-        g.fillRoundedRectangle(capX, capY, capWidth, capHeight, 2.5f);
+        // 3-stage vertical chamfer profile
+        const float chamferH = 7.0f;
 
-        // Cap bevel edge
-        g.setColour(juce::Colour(0xff9DA2AD));
+        // Top chamfer (specular reflection on top slope)
+        auto topChamfer = juce::Rectangle<float>(capX, capY, capWidth, chamferH);
+        juce::ColourGradient topGrad(juce::Colour(0xff3C4048), capX, capY,
+                                     juce::Colour(0xff22252B), capX, capY + chamferH, false);
+        g.setGradientFill(topGrad);
+        g.fillRoundedRectangle(topChamfer, 2.5f);
+
+        // Bottom chamfer (shadow on bottom slope)
+        auto botChamfer = juce::Rectangle<float>(capX, capY + capHeight - chamferH, capWidth, chamferH);
+        juce::ColourGradient botGrad(juce::Colour(0xff181A1E), capX, botChamfer.getY(),
+                                     juce::Colour(0xff0D0E10), capX, botChamfer.getBottom(), false);
+        g.setGradientFill(botGrad);
+        g.fillRoundedRectangle(botChamfer, 2.5f);
+
+        // Center main block: matte dark broadcast charcoal
+        auto centerBlock = juce::Rectangle<float>(capX, capY + chamferH - 0.5f, capWidth, capHeight - 2.0f * chamferH + 1.0f);
+        juce::ColourGradient midGrad(juce::Colour(0xff24272E), capX, centerBlock.getY(),
+                                     juce::Colour(0xff181A1E), capX, centerBlock.getBottom(), false);
+        g.setGradientFill(midGrad);
+        g.fillRect(centerBlock);
+
+        // Subtle tactile finger-grip ridges
+        const float midY = capY + capHeight * 0.5f;
+        g.setColour(juce::Colour(0xff121316));
+        g.drawHorizontalLine(static_cast<int>(midY - 6.0f), capX + 4.0f, capX + capWidth - 4.0f);
+        g.drawHorizontalLine(static_cast<int>(midY + 6.0f), capX + 4.0f, capX + capWidth - 4.0f);
+        g.setColour(juce::Colour(0xff30343D));
+        g.drawHorizontalLine(static_cast<int>(midY - 5.0f), capX + 4.0f, capX + capWidth - 4.0f);
+        g.drawHorizontalLine(static_cast<int>(midY + 7.0f), capX + 4.0f, capX + capWidth - 4.0f);
+
+        // Fader cap outer border
+        g.setColour(juce::Colour(0xff40444D));
         g.drawRoundedRectangle(capX, capY, capWidth, capHeight, 2.5f, 1.0f);
 
-        // Center white indicator line
+        // Top edge highlight hairline
+        g.setColour(juce::Colour(0xff5E6472));
+        g.drawHorizontalLine(static_cast<int>(capY + 0.5f), capX + 2.0f, capX + capWidth - 2.0f);
+
+        // 3. Center White Position Indicator Line (Crisp 2.0px Pure White)
+        g.setColour(juce::Colours::black.withAlpha(0.55f));
+        g.fillRect(capX + 1.5f, midY, capWidth - 3.0f, 2.0f);
         g.setColour(juce::Colours::white);
-        g.fillRect(capX + 3.0f, capY + (capHeight * 0.5f) - 1.0f, capWidth - 6.0f, 2.0f);
+        g.fillRect(capX + 1.5f, midY - 1.0f, capWidth - 3.0f, 2.0f);
     }
 
     void DSDLookAndFeel::drawRotarySlider(juce::Graphics& g,
@@ -138,15 +181,18 @@ namespace dsd
         if (isToggled)
         {
             // ====================================================================
-            // ON STATE: ILLUMINATED AMBER BULB WITH FILM LAYER
+            // ON STATE: ILLUMINATED INCANDESCENT BULB WITH FILM LAYER
             // ====================================================================
+            const bool isRedAlert = button.getButtonText().equalsIgnoreCase("ON") 
+                                 || button.getButtonText().equalsIgnoreCase("MUTE") 
+                                 || button.getButtonText().equalsIgnoreCase("OFF");
             const float cx = innerBounds.getCentreX();
             const float cy = innerBounds.getCentreY();
 
-            // Radial incandescent bulb gradient: Glowing warm core -> rich amber -> deep edge
-            juce::Colour bulbCore = getAmberBulbCore();
-            juce::Colour bulbMid  = getAmberBulbMid();
-            juce::Colour bulbEdge = getAmberBulbEdge();
+            // Radial incandescent bulb gradient: Glowing warm core -> rich bulb -> deep edge
+            juce::Colour bulbCore = isRedAlert ? juce::Colour(0xffff5722) : getAmberBulbCore();
+            juce::Colour bulbMid  = isRedAlert ? juce::Colour(0xffd50000) : getAmberBulbMid();
+            juce::Colour bulbEdge = isRedAlert ? juce::Colour(0xff8a0000) : getAmberBulbEdge();
 
             if (shouldDrawButtonAsHighlighted)
             {
@@ -172,11 +218,11 @@ namespace dsd
             g.fillRoundedRectangle(highlightRect, 2.0f);
 
             // Outer illuminated lens rim glow
-            g.setColour(juce::Colour(0xffffe082).withAlpha(0.75f));
+            g.setColour((isRedAlert ? juce::Colour(0xffff8a80) : juce::Colour(0xffffe082)).withAlpha(0.75f));
             g.drawRoundedRectangle(innerBounds, cornerRadius, 1.0f);
 
-            // Subtle warm amber ambient light bleed on bezel
-            g.setColour(juce::Colour(0xffffa000).withAlpha(0.35f));
+            // Subtle warm ambient light bleed on bezel
+            g.setColour((isRedAlert ? juce::Colour(0xffff1744) : juce::Colour(0xffffa000)).withAlpha(0.35f));
             g.drawRoundedRectangle(bounds.expanded(0.5f), cornerRadius + 0.5f, 0.8f);
         }
         else
@@ -223,16 +269,35 @@ namespace dsd
 
         if (isToggled)
         {
-            // Backlit film stencil lettering (crisp dark silhouette on glowing amber bulb)
-            g.setColour(juce::Colour(0xff3e1800).withAlpha(0.40f));
-            g.drawFittedText(button.getButtonText(),
-                             bounds.translated(0.0f, 1.0f).toNearestInt(),
-                             juce::Justification::centred, 1);
+            const bool isRedAlert = button.getButtonText().equalsIgnoreCase("ON") 
+                                 || button.getButtonText().equalsIgnoreCase("MUTE") 
+                                 || button.getButtonText().equalsIgnoreCase("OFF");
+            if (isRedAlert)
+            {
+                // Crisp high-contrast white text on glowing red broadcast lens
+                g.setColour(juce::Colours::black.withAlpha(0.55f));
+                g.drawFittedText(button.getButtonText(),
+                                 bounds.translated(0.0f, 1.0f).toNearestInt(),
+                                 juce::Justification::centred, 1);
 
-            g.setColour(juce::Colour(0xff180800));
-            g.drawFittedText(button.getButtonText(),
-                             bounds.toNearestInt(),
-                             juce::Justification::centred, 1);
+                g.setColour(juce::Colours::white);
+                g.drawFittedText(button.getButtonText(),
+                                 bounds.toNearestInt(),
+                                 juce::Justification::centred, 1);
+            }
+            else
+            {
+                // Backlit film stencil lettering (crisp dark silhouette on glowing amber bulb)
+                g.setColour(juce::Colour(0xff3e1800).withAlpha(0.40f));
+                g.drawFittedText(button.getButtonText(),
+                                 bounds.translated(0.0f, 1.0f).toNearestInt(),
+                                 juce::Justification::centred, 1);
+
+                g.setColour(juce::Colour(0xff180800));
+                g.drawFittedText(button.getButtonText(),
+                                 bounds.toNearestInt(),
+                                 juce::Justification::centred, 1);
+            }
         }
         else
         {

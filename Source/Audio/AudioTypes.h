@@ -3,6 +3,9 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <algorithm>
+#include <juce_core/juce_core.h>
+
 
 namespace dsd
 {
@@ -47,17 +50,55 @@ namespace dsd
 
     struct WorkerThreadStats
     {
-        std::atomic<float> cpuLoadPercent{0.0f};
+        std::atomic<float> workerUtilizationPercent{0.0f};
+        std::atomic<float> cpuLoadPercent{0.0f}; // Maintained for legacy compatibility
+        std::atomic<double> busyTimeMs{0.0};
         std::atomic<uint32_t> blocksProcessed{0};
+        std::atomic<bool> isParked{false};
+        std::atomic<int> tasksAssigned{0};
     };
 
     struct EnginePerformanceStats
     {
-        std::atomic<float> cpuLoadPercent{0.0f};
-        std::atomic<double> processingTimeMs{0.0};
-        std::atomic<double> deadlineMs{2.67};
-        std::atomic<uint64_t> xrunCount{0};
+        std::atomic<float> currentLoadPercent{0.0f};
+        std::atomic<float> cpuLoadPercent{0.0f}; // Legacy alias for currentLoadPercent
+        std::atomic<float> avgLoadPercent{0.0f};
+        std::atomic<float> peakLoadPercent{0.0f};
+
+        std::atomic<double> currentProcessingTimeMs{0.0};
+        std::atomic<double> processingTimeMs{0.0}; // Legacy alias for currentProcessingTimeMs
+        std::atomic<double> avgProcessingTimeMs{0.0};
+        std::atomic<double> peakProcessingTimeMs{0.0};
+
+        std::atomic<double> deadlineMs{10.0};
+        std::atomic<double> currentHeadroomMs{10.0};
+        std::atomic<double> minHeadroomMs{10.0};
+
+        std::atomic<uint64_t> deadlineMissCount{0}; // DSP execution exceeded deadline
+        std::atomic<uint64_t> xrunCount{0};         // Physical audio device / WASAPI glitch
         std::atomic<bool> isGlitching{false};
-        std::atomic<int> activeWorkersCount{0};
+
+        std::atomic<int64_t> lastDeadlineMissTimestampMs{0};
+        std::atomic<int64_t> lastXrunTimestampMs{0};
+        std::atomic<int> activeWorkersCount{4};
+
+        void resetPeaks() noexcept
+        {
+            peakProcessingTimeMs.store(0.0, std::memory_order_relaxed);
+            peakLoadPercent.store(0.0f, std::memory_order_relaxed);
+            minHeadroomMs.store(deadlineMs.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        }
+
+        void resetMetrics() noexcept
+        {
+            deadlineMissCount.store(0, std::memory_order_relaxed);
+            xrunCount.store(0, std::memory_order_relaxed);
+            isGlitching.store(false, std::memory_order_relaxed);
+            lastDeadlineMissTimestampMs.store(0, std::memory_order_relaxed);
+            lastXrunTimestampMs.store(0, std::memory_order_relaxed);
+            resetPeaks();
+        }
     };
+
+
 } // namespace dsd

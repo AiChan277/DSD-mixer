@@ -35,6 +35,7 @@ namespace dsd
 
         bool addPlugin(std::unique_ptr<juce::AudioPluginInstance> pluginInstance, const juce::String& name);
         bool removePlugin(int index);
+        void clear();
         void movePlugin(int fromIndex, int toIndex);
         void setBypass(int index, bool bypassed);
         bool isBypassed(int index) const;

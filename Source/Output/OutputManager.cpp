@@ -13,10 +13,10 @@ namespace dsd
         outputs.reserve(count);
 
         const struct { const char* name; int chOffset; } defaultOuts[] = {
-            { "Studio Monitor",  0 }, // OUT 01 connects to Primary Master Output DAC Ch 1-2
-            { "Headphones",     -1 },
-            { "OBS / Stream",   -1 },
-            { "Recording",      -1 }
+            { "STUDIO MONITOR",  0 }, // OUT 01 connects to Primary Master Output DAC Ch 1-2
+            { "HEADPHONES",     -1 },
+            { "OBS / STREAM",   -1 },
+            { "RECORDING",      -1 }
         };
 
         for (int i = 0; i < count; ++i)

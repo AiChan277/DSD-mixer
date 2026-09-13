@@ -19,6 +19,7 @@ namespace dsd
         ~MainView() override;
 
         void timerCallback() override;
+        void updateAllUI();
 
         void resized() override;
         void paint(juce::Graphics& g) override;

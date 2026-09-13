@@ -190,6 +190,9 @@ namespace dsd
                     bool success = SessionManager::loadSessionFromFile(file, audioEngineRef, deviceManagerRef);
                     if (success)
                     {
+                        if (onSessionLoaded)
+                            onSessionLoaded();
+
                         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon, "Session Loaded",
                             "Session loaded from " + file.getFileName(), "OK");
                     }

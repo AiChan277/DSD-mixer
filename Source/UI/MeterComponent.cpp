@@ -22,8 +22,8 @@ namespace dsd
 
     void MeterComponent::mouseDown(const juce::MouseEvent& event)
     {
-        // Top clip LED area reset
-        if (event.y < 16)
+        // Top clip LED / header area reset
+        if (event.y < 24)
         {
             isClipped = false;
             if (onClipReset)
@@ -79,8 +79,8 @@ namespace dsd
     {
         auto bounds = getLocalBounds().toFloat();
 
-        // 1. Clip LED circle at top
-        const float clipSize = 8.0f;
+        // 1. Clip LED circle at top center
+        const float clipSize = 7.0f;
         const float clipX = bounds.getCentreX() - clipSize * 0.5f;
         const float clipY = 2.0f;
 
@@ -101,17 +101,27 @@ namespace dsd
             g.drawEllipse(clipX, clipY, clipSize, clipSize, 0.8f);
         }
 
-        // 2. Meter Bar Area
-        auto meterArea = bounds.withTrimmedTop(14.0f).withTrimmedBottom(2.0f);
-
         if (isStereo)
         {
-            const float barWidth = (meterArea.getWidth() - 3.0f) * 0.5f;
-            drawSingleMeterBar(g, meterArea.withWidth(barWidth), currentPeakL, currentHoldL);
-            drawSingleMeterBar(g, meterArea.withLeft(meterArea.getX() + barWidth + 3.0f), currentPeakR, currentHoldR);
+            const float barGap = 4.0f;
+            const float barWidth = (bounds.getWidth() - barGap) * 0.5f;
+            const float leftBarX = bounds.getX();
+            const float rightBarX = bounds.getX() + barWidth + barGap;
+
+            // 2. Channel header text: "L" and "R"
+            g.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+            g.setColour(juce::Colour(0xffADB2BA));
+            g.drawText("L", static_cast<int>(leftBarX), 11, static_cast<int>(barWidth), 12, juce::Justification::centred, false);
+            g.drawText("R", static_cast<int>(rightBarX), 11, static_cast<int>(barWidth), 12, juce::Justification::centred, false);
+
+            // 3. Dual vertical meter bars
+            auto barsArea = bounds.withTrimmedTop(24.0f).withTrimmedBottom(2.0f);
+            drawSingleMeterBar(g, juce::Rectangle<float>(leftBarX, barsArea.getY(), barWidth, barsArea.getHeight()), currentPeakL, currentHoldL);
+            drawSingleMeterBar(g, juce::Rectangle<float>(rightBarX, barsArea.getY(), barWidth, barsArea.getHeight()), currentPeakR, currentHoldR);
         }
         else
         {
+            auto meterArea = bounds.withTrimmedTop(14.0f).withTrimmedBottom(2.0f);
             drawSingleMeterBar(g, meterArea, currentPeakL, currentHoldL);
         }
     }

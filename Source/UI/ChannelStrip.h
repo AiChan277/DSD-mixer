@@ -27,24 +27,32 @@ namespace dsd
         ~ChannelStrip() override;
         void updateMeterFromAudio();
         void refreshDeviceList();
+        void updateUIFromChannel();
         void resized() override;
         void paint(juce::Graphics& g) override;
     private:
         AudioChannel& channelRef;
         juce::AudioDeviceManager& devMgrRef;
         DynamicComboBox inputDeviceSelector;
+        // OLED Screen Card components
         juce::Label chNumberBadge;
-        juce::Label dbfsReadout;
-        MeterComponent topMeter;
-        juce::TextButton directMonitorBtn{"DM"};
-        juce::TextButton muteBtn{"MUTE"};
-        juce::TextButton disableOutputBtn{"OUT"};
-        juce::TextButton phaseInvertBtn;
-        juce::TextButton monoBtn{"MONO"};
-        juce::TextButton vstRackBtn{"VST RACK"};
         juce::Label gainReadout;
-        FaderComponent fader;
         juce::Label channelNameLabel;
+        MeterComponent topMeter;
+        juce::Label dbfsReadout;
+
+        // Sub-function utility buttons (compact row)
+        juce::TextButton vstRackBtn{"VST"};
+        juce::TextButton directMonitorBtn{"DM"};
+        juce::TextButton phaseInvertBtn{"PH"};
+        juce::TextButton monoBtn{"MONO"};
+
+        // Hardware Broadcast Fader
+        FaderComponent fader;
+
+        // Large Broadcast Bottom Buttons (DHD RX2/SX2 Console)
+        juce::TextButton onBtn{"ON"};
+        juce::TextButton muteBtn{"OFF"};
 
         std::vector<RunningAppInfo> runningApps;
 

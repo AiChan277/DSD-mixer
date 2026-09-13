@@ -14,12 +14,12 @@ namespace dsd
         OutputBayPanel(OutputManager& outManager, juce::AudioDeviceManager& deviceManager);
         ~OutputBayPanel() override = default;
         void updateMeters();
+        void updateAllUI();
         void resized() override;
         void paint(juce::Graphics& g) override;
     private:
         OutputManager& outputManagerRef;
         juce::AudioDeviceManager& devMgrRef;
-        juce::Label headerLabel;
         std::vector<std::unique_ptr<OutputBayStrip>> outputStrips;
     };
 }

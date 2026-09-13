@@ -14,18 +14,24 @@ namespace dsd
         ~OutputBayStrip() override = default;
         void updateMeterFromAudio();
         void refreshDeviceList();
+        void updateUIFromBus();
         void resized() override;
         void paint(juce::Graphics& g) override;
     private:
         OutputBus& outputBusRef;
         juce::AudioDeviceManager& devMgrRef;
-        juce::ComboBox outputDeviceSelector;
+        
+        juce::Label busIdLabel;
         juce::Label busNameLabel;
+        juce::ComboBox outputDeviceSelector;
         juce::TextButton muteBtn{"MUTE"};
         juce::TextButton monitorBtn{"MON"};
         MeterComponent stereoMeter;
         FaderComponent fader;
+        juce::Label gainReadout;
+
         void setupButtons();
         void onDeviceSelected();
+        void updateGainReadout(float db);
     };
 }

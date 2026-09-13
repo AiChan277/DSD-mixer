@@ -218,6 +218,32 @@ namespace dsd
         return false;
     }
 
+    void PluginRack::clear()
+    {
+        std::vector<std::unique_ptr<PluginSlot>> toDelete;
+        {
+            std::lock_guard<std::mutex> lock(rackMutex);
+            toDelete = std::move(slots);
+            slots.clear();
+        }
+
+        for (auto& slot : toDelete)
+        {
+            if (slot != nullptr)
+            {
+                if (slot->activeEditorWindow != nullptr)
+                {
+                    slot->activeEditorWindow->setVisible(false);
+                    delete slot->activeEditorWindow.getComponent();
+                }
+                if (slot->instance != nullptr)
+                {
+                    try { slot->instance->releaseResources(); } catch (...) {}
+                }
+            }
+        }
+    }
+
     void PluginRack::movePlugin(int fromIndex, int toIndex)
     {
         std::lock_guard<std::mutex> lock(rackMutex);

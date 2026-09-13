@@ -20,7 +20,6 @@ namespace dsd
 
     private:
         juce::Slider slider;
-        juce::Label  valueLabel;
         std::function<void(float)> onValueChanged;
 
         static float skewDb(float db) noexcept;

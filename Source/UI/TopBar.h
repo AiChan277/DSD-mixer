@@ -12,6 +12,8 @@ namespace dsd
         TopBar(AudioDeviceManager& devManager, AudioEngine& audioEngine);
         ~TopBar() override = default;
 
+        std::function<void()> onSessionLoaded;
+
         void updateStats();
 
         void resized() override;
