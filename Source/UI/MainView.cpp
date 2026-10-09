@@ -2,12 +2,13 @@
 
 namespace dsd
 {
-    MainView::MainView(AudioDeviceManager& devManager, AudioEngine& audioEngine)
+    MainView::MainView(AudioDeviceManager& devManager, AudioEngine& audioEngine, control::ControlServer* controlServer)
         : deviceManagerRef(devManager),
           audioEngineRef(audioEngine),
-          topBar(devManager, audioEngine),
+          topBar(devManager, audioEngine, controlServer),
           outputBayPanel(audioEngine.getOutputManager(), devManager.getJuceManager())
     {
+        juce::LookAndFeel::setDefaultLookAndFeel(&customLookAndFeel);
         setLookAndFeel(&customLookAndFeel);
 
         addAndMakeVisible(topBar);
@@ -36,14 +37,29 @@ namespace dsd
             updateAllUI();
         };
 
-        startTimerHz(45);
+        if (controlServer != nullptr)
+        {
+            controlServerRef = controlServer;
+            controlServerRef->getStateObserver().addListener(this);
+        }
+
+        startTimerHz(30);
         setSize(1360, 720);
     }
 
     MainView::~MainView()
     {
+        if (controlServerRef != nullptr)
+            controlServerRef->getStateObserver().removeListener(this);
+
         stopTimer();
         setLookAndFeel(nullptr);
+        juce::LookAndFeel::setDefaultLookAndFeel(nullptr);
+    }
+
+    void MainView::onStateEvents(const std::vector<juce::String>& /*events*/)
+    {
+        updateAllUI();
     }
 
     void MainView::updateAllUI()
@@ -91,7 +107,7 @@ namespace dsd
         const int scrollbarPad = willShowScrollbar ? 16 : 0;
         const int availableHeight = bounds.getHeight() - scrollbarPad;
 
-        channelsContainer.setBounds(0, 0, std::max(totalWidth, bounds.getWidth()), availableHeight);
+        channelsContainer.setBounds(0, 0, juce::jmax(totalWidth, bounds.getWidth()), availableHeight);
 
         int currentX = 0;
         for (auto& strip : channelStrips)

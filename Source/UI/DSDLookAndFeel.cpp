@@ -1,4 +1,5 @@
 #include "UI/DSDLookAndFeel.h"
+#include <BinaryData.h>
 
 namespace dsd
 {
@@ -20,8 +21,8 @@ namespace dsd
     juce::Font DSDLookAndFeel::getTextButtonFont(juce::TextButton& button, int buttonHeight)
     {
         if (button.getButtonText().equalsIgnoreCase("ON"))
-            return juce::FontOptions(12.5f, juce::Font::bold);
-        return juce::FontOptions(std::clamp(static_cast<float>(buttonHeight) * 0.45f, 9.5f, 11.5f), juce::Font::bold);
+            return juce::FontOptions(12.0f, juce::Font::bold);
+        return juce::FontOptions(std::clamp(static_cast<float>(buttonHeight) * 0.38f, 9.0f, 10.5f), juce::Font::bold);
     }
 
     void DSDLookAndFeel::drawLinearSlider(juce::Graphics& g,
@@ -54,63 +55,47 @@ namespace dsd
         g.drawVerticalLine(static_cast<int>(trackCenterX), trackY + 1.0f, trackY + trackHeight - 1.0f);
 
         // ========================================================================
-        // 2. Broadcast Console Fader Cap (DHD RX2/SX2 Matte Chamfered Block)
+        // 2. Fader thumb — render Fader.png asset centered on sliderPos
         // ========================================================================
-        const float capWidth = 32.0f;
-        const float capHeight = 40.0f;
+        // 2. Fader thumb — render Fader.png asset centered on sliderPos
+        // Fader.png is 157x327 (ratio 0.48). Width 25px -> Height 52px (exact proportion)
+        const float capWidth  = 25.0f;
+        const float capHeight = 52.0f;
         const float capX = trackCenterX - capWidth * 0.5f;
         const float capY = sliderPos - capHeight * 0.5f;
 
-        // Drop shadow under fader cap
-        g.setColour(juce::Colours::black.withAlpha(0.38f));
-        g.fillRoundedRectangle(capX - 2.0f, capY + 3.0f, capWidth + 4.0f, capHeight, 3.5f);
+        auto faderImg = juce::ImageCache::getFromMemory(
+                            BinaryData::Fader_png, BinaryData::Fader_pngSize);
 
-        // 3-stage vertical chamfer profile
-        const float chamferH = 7.0f;
+        if (faderImg.isValid())
+        {
+            // Draw the PNG thumb directly with no second thumb or generic artifacts
+            g.drawImage(faderImg,
+                        static_cast<int>(capX), static_cast<int>(capY),
+                        static_cast<int>(capWidth), static_cast<int>(capHeight),
+                        0, 0, faderImg.getWidth(), faderImg.getHeight());
+        }
+        else
+        {
+            // Fallback: drawn cap if image unavailable
+            const float midY = capY + capHeight * 0.5f;
 
-        // Top chamfer (specular reflection on top slope)
-        auto topChamfer = juce::Rectangle<float>(capX, capY, capWidth, chamferH);
-        juce::ColourGradient topGrad(juce::Colour(0xff3C4048), capX, capY,
-                                     juce::Colour(0xff22252B), capX, capY + chamferH, false);
-        g.setGradientFill(topGrad);
-        g.fillRoundedRectangle(topChamfer, 2.5f);
+            g.setColour(juce::Colours::black.withAlpha(0.38f));
+            g.fillRoundedRectangle(capX - 2.0f, capY + 3.0f, capWidth + 4.0f, capHeight, 3.5f);
 
-        // Bottom chamfer (shadow on bottom slope)
-        auto botChamfer = juce::Rectangle<float>(capX, capY + capHeight - chamferH, capWidth, chamferH);
-        juce::ColourGradient botGrad(juce::Colour(0xff181A1E), capX, botChamfer.getY(),
-                                     juce::Colour(0xff0D0E10), capX, botChamfer.getBottom(), false);
-        g.setGradientFill(botGrad);
-        g.fillRoundedRectangle(botChamfer, 2.5f);
+            juce::ColourGradient midGrad(juce::Colour(0xff24272E), capX, capY,
+                                         juce::Colour(0xff181A1E), capX, capY + capHeight, false);
+            g.setGradientFill(midGrad);
+            g.fillRoundedRectangle(capX, capY, capWidth, capHeight, 2.5f);
 
-        // Center main block: matte dark broadcast charcoal
-        auto centerBlock = juce::Rectangle<float>(capX, capY + chamferH - 0.5f, capWidth, capHeight - 2.0f * chamferH + 1.0f);
-        juce::ColourGradient midGrad(juce::Colour(0xff24272E), capX, centerBlock.getY(),
-                                     juce::Colour(0xff181A1E), capX, centerBlock.getBottom(), false);
-        g.setGradientFill(midGrad);
-        g.fillRect(centerBlock);
+            g.setColour(juce::Colour(0xff40444D));
+            g.drawRoundedRectangle(capX, capY, capWidth, capHeight, 2.5f, 1.0f);
 
-        // Subtle tactile finger-grip ridges
-        const float midY = capY + capHeight * 0.5f;
-        g.setColour(juce::Colour(0xff121316));
-        g.drawHorizontalLine(static_cast<int>(midY - 6.0f), capX + 4.0f, capX + capWidth - 4.0f);
-        g.drawHorizontalLine(static_cast<int>(midY + 6.0f), capX + 4.0f, capX + capWidth - 4.0f);
-        g.setColour(juce::Colour(0xff30343D));
-        g.drawHorizontalLine(static_cast<int>(midY - 5.0f), capX + 4.0f, capX + capWidth - 4.0f);
-        g.drawHorizontalLine(static_cast<int>(midY + 7.0f), capX + 4.0f, capX + capWidth - 4.0f);
-
-        // Fader cap outer border
-        g.setColour(juce::Colour(0xff40444D));
-        g.drawRoundedRectangle(capX, capY, capWidth, capHeight, 2.5f, 1.0f);
-
-        // Top edge highlight hairline
-        g.setColour(juce::Colour(0xff5E6472));
-        g.drawHorizontalLine(static_cast<int>(capY + 0.5f), capX + 2.0f, capX + capWidth - 2.0f);
-
-        // 3. Center White Position Indicator Line (Crisp 2.0px Pure White)
-        g.setColour(juce::Colours::black.withAlpha(0.55f));
-        g.fillRect(capX + 1.5f, midY, capWidth - 3.0f, 2.0f);
-        g.setColour(juce::Colours::white);
-        g.fillRect(capX + 1.5f, midY - 1.0f, capWidth - 3.0f, 2.0f);
+            g.setColour(juce::Colours::black.withAlpha(0.55f));
+            g.fillRect(capX + 1.5f, midY, capWidth - 3.0f, 2.0f);
+            g.setColour(juce::Colours::white);
+            g.fillRect(capX + 1.5f, midY - 1.0f, capWidth - 3.0f, 2.0f);
+        }
     }
 
     void DSDLookAndFeel::drawRotarySlider(juce::Graphics& g,
@@ -166,143 +151,119 @@ namespace dsd
                                               bool shouldDrawButtonAsHighlighted,
                                               bool shouldDrawButtonAsDown)
     {
-        auto bounds = button.getLocalBounds().toFloat().reduced(1.0f);
-        const bool isToggled = button.getToggleState();
-        const float cornerRadius = 3.5f;
-
-        // 1. Recessed bezel seating border around button
-        g.setColour(juce::Colour(0xff7D818A));
-        g.drawRoundedRectangle(bounds, cornerRadius, 1.2f);
-
-        auto innerBounds = bounds.reduced(1.0f);
+        auto bounds = button.getLocalBounds().toFloat();
         if (shouldDrawButtonAsDown)
-            innerBounds = innerBounds.translated(0.0f, 0.8f);
+            bounds = bounds.translated(0.0f, 0.8f);
 
-        if (isToggled)
+        const bool isLit = button.getToggleState() || shouldDrawButtonAsDown;
+
+        auto img = isLit ? juce::ImageCache::getFromMemory(BinaryData::OnButton_png, BinaryData::OnButton_pngSize)
+                         : juce::ImageCache::getFromMemory(BinaryData::OffButton_png, BinaryData::OffButton_pngSize);
+
+        if (img.isValid())
         {
-            // ====================================================================
-            // ON STATE: ILLUMINATED INCANDESCENT BULB WITH FILM LAYER
-            // ====================================================================
-            const bool isRedAlert = button.getButtonText().equalsIgnoreCase("ON") 
-                                 || button.getButtonText().equalsIgnoreCase("MUTE") 
-                                 || button.getButtonText().equalsIgnoreCase("OFF");
-            const float cx = innerBounds.getCentreX();
-            const float cy = innerBounds.getCentreY();
+            g.setImageResamplingQuality(juce::Graphics::highResamplingQuality);
 
-            // Radial incandescent bulb gradient: Glowing warm core -> rich bulb -> deep edge
-            juce::Colour bulbCore = isRedAlert ? juce::Colour(0xffff5722) : getAmberBulbCore();
-            juce::Colour bulbMid  = isRedAlert ? juce::Colour(0xffd50000) : getAmberBulbMid();
-            juce::Colour bulbEdge = isRedAlert ? juce::Colour(0xff8a0000) : getAmberBulbEdge();
+            const int bx = static_cast<int>(std::round(bounds.getX()));
+            const int by = static_cast<int>(std::round(bounds.getY()));
+            const int bw = static_cast<int>(std::round(bounds.getWidth()));
+            const int bh = static_cast<int>(std::round(bounds.getHeight()));
 
-            if (shouldDrawButtonAsHighlighted)
+            if (bw > 0 && bh > 0)
             {
-                bulbCore = bulbCore.brighter(0.12f);
-                bulbMid  = bulbMid.brighter(0.08f);
+                const int sw = img.getWidth();
+                const int sh = img.getHeight();
+                // Bezel + inner rounded corner is within the outer 76px of the 307x302 asset
+                const int sc = 76;
+                const int minDim = std::min(bw, bh);
+                const int dc = std::clamp(static_cast<int>(std::round(static_cast<float>(minDim) * (static_cast<float>(sc) / static_cast<float>(sh)))),
+                                          2, std::max(2, minDim / 2));
+
+                const int dwMid = std::max(0, bw - 2 * dc);
+                const int dhMid = std::max(0, bh - 2 * dc);
+                const int swMid = sw - 2 * sc;
+                const int shMid = sh - 2 * sc;
+
+                // 4 Corners
+                g.drawImage(img, bx,               by,               dc, dc, 0,       0,       sc, sc);
+                g.drawImage(img, bx + bw - dc,     by,               dc, dc, sw - sc, 0,       sc, sc);
+                g.drawImage(img, bx,               by + bh - dc,     dc, dc, 0,       sh - sc, sc, sc);
+                g.drawImage(img, bx + bw - dc,     by + bh - dc,     dc, dc, sw - sc, sh - sc, sc, sc);
+
+                // Top & Bottom Edges
+                if (dwMid > 0)
+                {
+                    g.drawImage(img, bx + dc, by,           dwMid, dc, sc, 0,       swMid, sc);
+                    g.drawImage(img, bx + dc, by + bh - dc, dwMid, dc, sc, sh - sc, swMid, sc);
+                }
+
+                // Left & Right Edges
+                if (dhMid > 0)
+                {
+                    g.drawImage(img, bx,           by + dc, dc, dhMid, 0,       sc, sc, shMid);
+                    g.drawImage(img, bx + bw - dc, by + dc, dc, dhMid, sw - sc, sc, sc, shMid);
+                }
+
+                // Center Cap
+                if (dwMid > 0 && dhMid > 0)
+                {
+                    g.drawImage(img, bx + dc, by + dc, dwMid, dhMid, sc, sc, swMid, shMid);
+                }
+
+                if (shouldDrawButtonAsHighlighted && button.isEnabled())
+                {
+                    auto innerCap = bounds.reduced(static_cast<float>(dc) * 0.65f);
+                    g.setColour(juce::Colours::white.withAlpha(isLit ? 0.10f : 0.16f));
+                    g.fillRoundedRectangle(innerCap, 2.0f);
+                }
+
+                if (!button.isEnabled())
+                {
+                    g.setColour(juce::Colours::black.withAlpha(0.35f));
+                    g.fillRoundedRectangle(bounds.reduced(1.0f), 3.0f);
+                }
             }
-
-            juce::ColourGradient bulbGlow(bulbCore, cx, cy - 2.0f,
-                                          bulbEdge, cx, innerBounds.getBottom(), true);
-            bulbGlow.addColour(0.40, bulbMid);
-            g.setGradientFill(bulbGlow);
-            g.fillRoundedRectangle(innerBounds, cornerRadius);
-
-            // Internal translucent film layer: soft milky diffusion
-            g.setColour(juce::Colours::white.withAlpha(0.12f));
-            g.fillRoundedRectangle(innerBounds.reduced(1.0f), cornerRadius);
-
-            // Protective acrylic cap highlight (specular film meniscus on upper 45%)
-            auto highlightRect = innerBounds.removeFromTop(innerBounds.getHeight() * 0.48f).reduced(1.0f, 0.5f);
-            juce::ColourGradient glassGrad(juce::Colours::white.withAlpha(0.40f), highlightRect.getX(), highlightRect.getY(),
-                                           juce::Colours::white.withAlpha(0.04f), highlightRect.getX(), highlightRect.getBottom(), false);
-            g.setGradientFill(glassGrad);
-            g.fillRoundedRectangle(highlightRect, 2.0f);
-
-            // Outer illuminated lens rim glow
-            g.setColour((isRedAlert ? juce::Colour(0xffff8a80) : juce::Colour(0xffffe082)).withAlpha(0.75f));
-            g.drawRoundedRectangle(innerBounds, cornerRadius, 1.0f);
-
-            // Subtle warm ambient light bleed on bezel
-            g.setColour((isRedAlert ? juce::Colour(0xffff1744) : juce::Colour(0xffffa000)).withAlpha(0.35f));
-            g.drawRoundedRectangle(bounds.expanded(0.5f), cornerRadius + 0.5f, 0.8f);
+            return;
         }
-        else
-        {
-            // ====================================================================
-            // OFF STATE: TRANSLUCENT MILKY FROSTED CAP (UNLIT)
-            // ====================================================================
-            juce::Colour capTop = shouldDrawButtonAsHighlighted ? juce::Colour(0xffECEEF2) : juce::Colour(0xffDFE2E8);
-            juce::Colour capBot = shouldDrawButtonAsHighlighted ? juce::Colour(0xffD6D9E0) : juce::Colour(0xffCBD0D8);
 
-            if (shouldDrawButtonAsDown)
-                std::swap(capTop, capBot);
-
-            juce::ColourGradient capGrad(capTop, innerBounds.getX(), innerBounds.getY(),
-                                         capBot, innerBounds.getX(), innerBounds.getBottom(), false);
-            g.setGradientFill(capGrad);
-            g.fillRoundedRectangle(innerBounds, cornerRadius);
-
-            // Subtle glossy film sheen across upper 42%
-            auto sheenRect = innerBounds.removeFromTop(innerBounds.getHeight() * 0.42f).reduced(1.0f, 0.5f);
-            juce::ColourGradient sheenGrad(juce::Colours::white.withAlpha(0.28f), sheenRect.getX(), sheenRect.getY(),
-                                           juce::Colours::white.withAlpha(0.02f), sheenRect.getX(), sheenRect.getBottom(), false);
-            g.setGradientFill(sheenGrad);
-            g.fillRoundedRectangle(sheenRect, 2.0f);
-
-            // Bevel rim (clean broadcast button edge)
-            g.setColour(juce::Colour(0xffB4B8C2));
-            g.drawRoundedRectangle(innerBounds, cornerRadius, 1.0f);
-            g.setColour(juce::Colours::white.withAlpha(0.6f));
-            g.drawHorizontalLine(static_cast<int>(innerBounds.getY() + 1.0f), innerBounds.getX() + 2.0f, innerBounds.getRight() - 2.0f);
-        }
+        // Vector fallback if asset is unavailable
+        const float cornerRadius = 3.5f;
+        g.setColour(juce::Colour(0xff7D818A));
+        g.drawRoundedRectangle(bounds.reduced(1.0f), cornerRadius, 1.2f);
+        auto innerBounds = bounds.reduced(2.0f);
+        g.setColour(isLit ? getAccentAmber() : juce::Colour(0xffCBD0D8));
+        g.fillRoundedRectangle(innerBounds, cornerRadius);
     }
 
     void DSDLookAndFeel::drawButtonText(juce::Graphics& g,
                                         juce::TextButton& button,
                                         bool /*shouldDrawButtonAsHighlighted*/,
-                                        bool /*shouldDrawButtonAsDown*/)
+                                        bool shouldDrawButtonAsDown)
     {
         auto font = getTextButtonFont(button, button.getHeight());
         g.setFont(font);
 
-        const bool isToggled = button.getToggleState();
-        auto bounds = button.getLocalBounds().toFloat();
+        const bool isLit = button.getToggleState() || shouldDrawButtonAsDown;
+        auto bounds = button.getLocalBounds().toFloat().reduced(6.0f, 2.0f);
+        if (shouldDrawButtonAsDown)
+            bounds = bounds.translated(0.0f, 0.8f);
 
-        if (isToggled)
+        if (isLit)
         {
-            const bool isRedAlert = button.getButtonText().equalsIgnoreCase("ON") 
-                                 || button.getButtonText().equalsIgnoreCase("MUTE") 
-                                 || button.getButtonText().equalsIgnoreCase("OFF");
-            if (isRedAlert)
-            {
-                // Crisp high-contrast white text on glowing red broadcast lens
-                g.setColour(juce::Colours::black.withAlpha(0.55f));
-                g.drawFittedText(button.getButtonText(),
-                                 bounds.translated(0.0f, 1.0f).toNearestInt(),
-                                 juce::Justification::centred, 1);
-
-                g.setColour(juce::Colours::white);
-                g.drawFittedText(button.getButtonText(),
-                                 bounds.toNearestInt(),
-                                 juce::Justification::centred, 1);
-            }
-            else
-            {
-                // Backlit film stencil lettering (crisp dark silhouette on glowing amber bulb)
-                g.setColour(juce::Colour(0xff3e1800).withAlpha(0.40f));
-                g.drawFittedText(button.getButtonText(),
-                                 bounds.translated(0.0f, 1.0f).toNearestInt(),
-                                 juce::Justification::centred, 1);
-
-                g.setColour(juce::Colour(0xff180800));
-                g.drawFittedText(button.getButtonText(),
-                                 bounds.toNearestInt(),
-                                 juce::Justification::centred, 1);
-            }
+            // Dark silhouette lettering on glowing amber OnButton.png cap
+            g.setColour(juce::Colour(0xff3e1800).withAlpha(0.35f));
+            g.drawFittedText(button.getButtonText(),
+                             bounds.translated(0.0f, 1.0f).toNearestInt(),
+                             juce::Justification::centred, 1);
+            g.setColour(juce::Colour(0xff180800));
+            g.drawFittedText(button.getButtonText(),
+                             bounds.toNearestInt(),
+                             juce::Justification::centred, 1);
         }
         else
         {
-            // Crisp dark graphite printed legend on milky film
-            g.setColour(juce::Colour(0xff2A2E35));
+            // Crisp dark graphite printed legend on milky OffButton.png cap
+            g.setColour(button.isEnabled() ? juce::Colour(0xff22262C) : juce::Colour(0xff6B707B));
             g.drawFittedText(button.getButtonText(),
                              bounds.toNearestInt(),
                              juce::Justification::centred, 1);

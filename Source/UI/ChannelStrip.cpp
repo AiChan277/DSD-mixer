@@ -4,47 +4,55 @@
 #include "DSP/GainProcessor.h"
 #include "Audio/AudioInputSource.h"
 #include "Audio/MultiDeviceManager.h"
+#include "Audio/AudioTypes.h"
 
 namespace dsd
 {
+    // =========================================================================
+    // Constructor
+    // =========================================================================
     ChannelStrip::ChannelStrip(AudioChannel& channel, juce::AudioDeviceManager& deviceManager)
         : channelRef(channel),
           devMgrRef(deviceManager),
-          topMeter(false)
+          topMeter(false, true)
     {
-        // 1. Device input selector at the top
+        // 1. Input device selector
         inputDeviceSelector.setTextWhenNothingSelected("None");
-        inputDeviceSelector.onBeforePopup = [this]()
-        {
-            refreshDeviceList();
-        };
+        inputDeviceSelector.onBeforePopup = [this]() { refreshDeviceList(); };
         inputDeviceSelector.onChange = [this]() { onDeviceSelected(); };
         addAndMakeVisible(inputDeviceSelector);
         refreshDeviceList();
 
-        // 2. Channel Number Badge
-        chNumberBadge.setText(juce::String::formatted("CH %02d", channelRef.getChannelID()), juce::dontSendNotification);
+        // 2. CH badge (in OLED top-center)
+        chNumberBadge.setText(juce::String::formatted("CH %02d", channelRef.getChannelID()),
+                              juce::dontSendNotification);
         chNumberBadge.setJustificationType(juce::Justification::centred);
-        chNumberBadge.setFont(juce::FontOptions(10.0f, juce::Font::bold));
-        chNumberBadge.setColour(juce::Label::backgroundColourId, juce::Colour(0xff15263F));
-        chNumberBadge.setColour(juce::Label::outlineColourId, juce::Colour(0xff2563EB));
-        chNumberBadge.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
+        chNumberBadge.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+        chNumberBadge.setColour(juce::Label::backgroundColourId, juce::Colour(0xff122238));
+        chNumberBadge.setColour(juce::Label::outlineColourId,    juce::Colour(0xff2563EB));
+        chNumberBadge.setColour(juce::Label::textColourId,       juce::Colour(0xffD0E4FF));
         addAndMakeVisible(chNumberBadge);
 
-        // 3. Fader dB Value Readout (in OLED card)
-        gainReadout.setText(juce::String(channelRef.getFaderDb(), 1) + " dB", juce::dontSendNotification);
-        gainReadout.setJustificationType(juce::Justification::centredRight);
-        gainReadout.setFont(juce::FontOptions(10.5f, juce::Font::bold));
-        gainReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentAmber());
-        addAndMakeVisible(gainReadout);
+        // 3. Fader dB readout (in OLED, top-right)
+        faderReadout.setJustificationType(juce::Justification::centredRight);
+        faderReadout.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        faderReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentAmber());
+        faderReadout.setTooltip("Channel fader level (dB)");
+        {
+            const float fd = channelRef.getFaderDb();
+            faderReadout.setText(
+                fd <= -59.5f ? "-inf dB" : (juce::String(fd, 1) + " dB"),
+                juce::dontSendNotification);
+        }
+        addAndMakeVisible(faderReadout);
 
-        // 4. Channel Name in OLED Screen (Editable)
+        // 4. Channel name label (in OLED, middle pill)
         channelNameLabel.setText(channelRef.getName(), juce::dontSendNotification);
         channelNameLabel.setJustificationType(juce::Justification::centred);
-        channelNameLabel.setFont(juce::FontOptions(11.5f, juce::Font::bold));
-        channelNameLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff16191F));
-        channelNameLabel.setColour(juce::Label::outlineColourId, juce::Colour(0xff2F3542));
-        channelNameLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
+        channelNameLabel.setFont(juce::FontOptions(10.5f, juce::Font::bold));
+        channelNameLabel.setColour(juce::Label::backgroundColourId, juce::Colour(0xff14171E));
+        channelNameLabel.setColour(juce::Label::outlineColourId,    juce::Colour(0xff2B303C));
+        channelNameLabel.setColour(juce::Label::textColourId,       DSDLookAndFeel::getTextOnOled());
         channelNameLabel.setEditable(true);
         channelNameLabel.setTooltip("Click to rename channel");
         channelNameLabel.onTextChange = [this]()
@@ -53,34 +61,66 @@ namespace dsd
         };
         addAndMakeVisible(channelNameLabel);
 
-        // 5. Mini Top Meter & Peak LED
+        // 5. PRE-GAIN numeric dBFS readout (in OLED, lower row)
+        preGainDbfsReadout.setText("IN: -oo dBFS", juce::dontSendNotification);
+        preGainDbfsReadout.setJustificationType(juce::Justification::centred);
+        preGainDbfsReadout.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+        preGainDbfsReadout.setColour(juce::Label::textColourId, juce::Colour(0xffC0C5CC));
+        preGainDbfsReadout.setTooltip("Pre-gain peak level (dBFS)");
+        addAndMakeVisible(preGainDbfsReadout);
+
+        // 6. PRE-GAIN meter (Stage A) - horizontal segmented LED bar
         topMeter.setClipResetCallback([this]()
         {
-            channelRef.getMeterValues().resetClip();
+            channelRef.getMeterInput().resetClip();
         });
+        topMeter.setTooltip("PRE-GAIN: raw input before gain and fader");
         addAndMakeVisible(topMeter);
 
-        // 6. dBFS Numeric Readout (bottom row of right section in OLED card)
-        dbfsReadout.setText("-oo dBFS", juce::dontSendNotification);
-        dbfsReadout.setJustificationType(juce::Justification::centred);
-        dbfsReadout.setFont(juce::FontOptions(10.5f, juce::Font::bold));
-        dbfsReadout.setColour(juce::Label::backgroundColourId, juce::Colour(0xff101216));
-        dbfsReadout.setColour(juce::Label::outlineColourId, juce::Colour(0xff222630));
-        dbfsReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterGreen());
-        addAndMakeVisible(dbfsReadout);
+        // 7. GAIN knob
+        gainKnob.setValue(channelRef.getGainDb(), false);
+        gainKnob.formatValue = [](double v)
+        {
+            if (v <= -59.5)
+                return juce::String("-inf");
+            return (v > 0 ? "+" : "") + juce::String(v, 1) + " dB";
+        };
+        gainKnob.onValueChanged = [this](double db)
+        {
+            channelRef.setGainDb(static_cast<float>(db));
+        };
+        gainKnob.setTooltip("GAIN: channel pre-gain (-60 dB to +24 dB)");
+        addAndMakeVisible(gainKnob);
 
-        // 7. Functional Console Buttons
+        // 8. PAN knob
+        panKnob.setBipolar(true);
+        panKnob.setValue(static_cast<double>(channelRef.getPan()), false);
+        panKnob.formatValue = [](double v)
+        {
+            if (std::abs(v) < 0.02)
+                return juce::String("C");
+            if (v < 0.0)
+                return "L " + juce::String(static_cast<int>(std::round(-v * 100.0)));
+            return "R " + juce::String(static_cast<int>(std::round(v * 100.0)));
+        };
+        panKnob.onValueChanged = [this](double panVal)
+        {
+            channelRef.setPan(static_cast<float>(panVal));
+        };
+        panKnob.setTooltip("PAN: constant-power stereo pan (-1 = L, 0 = C, +1 = R)");
+        addAndMakeVisible(panKnob);
+
+        // 9. All buttons
         setupButtons();
 
-        // 8. Broadcast Fader
+        // 10. Hardware fader
         fader.setValue(channelRef.getFaderDb(), juce::dontSendNotification);
         fader.setOnValueChanged([this](float db)
         {
             channelRef.setFaderDb(db);
-            if (db <= -59.5f)
-                gainReadout.setText("-inf dB", juce::dontSendNotification);
-            else
-                gainReadout.setText(juce::String(db, 1) + " dB", juce::dontSendNotification);
+            faderReadout.setText(
+                db <= -59.5f ? "-inf dB" : (juce::String(db, 1) + " dB"),
+                juce::dontSendNotification);
         });
         addAndMakeVisible(fader);
     }
@@ -94,20 +134,20 @@ namespace dsd
         }
     }
 
+    // =========================================================================
+    // Device list
+    // =========================================================================
     void ChannelStrip::refreshDeviceList()
     {
         inputDeviceSelector.clear(juce::dontSendNotification);
 
-        // 1. None option
         inputDeviceSelector.addItem("None", 1);
 
-        // 2. Direct Hardware Inputs (Zero-Latency, 100% Glitch-Free)
         inputDeviceSelector.addSectionHeading("[ Direct Hardware Inputs ]");
         inputDeviceSelector.addItem("Primary In 1 (Mic / L) [Clean Direct]", 10);
-        inputDeviceSelector.addItem("Primary In 2 (R) [Clean Direct]", 11);
+        inputDeviceSelector.addItem("Primary In 2 (R) [Clean Direct]",        11);
         inputDeviceSelector.addItem("Primary In 1+2 (Stereo) [Clean Direct]", 12);
 
-        // 3. Application Audio Capture (OBS Style Process Loopback)
         runningApps = WindowAudioCapture::getRunningApplications();
         if (!runningApps.empty())
         {
@@ -121,106 +161,88 @@ namespace dsd
             }
         }
 
-        // 4. Real Windows Audio Input Devices (WASAPI)
         auto winInputs = MultiDeviceManager::getInstance().getAvailableInputDevices();
         if (!winInputs.isEmpty())
         {
             inputDeviceSelector.addSectionHeading("[ Windows Audio Devices ]");
             for (int i = 0; i < winInputs.size(); ++i)
-            {
                 inputDeviceSelector.addItem(winInputs[i], 100 + i);
-            }
         }
 
-        // 5. Test Tone Generators
         inputDeviceSelector.addSectionHeading("[ Test Tone Generators ]");
         inputDeviceSelector.addItem("Sine Wave (1 kHz)", 50);
-        inputDeviceSelector.addItem("Pink Noise", 51);
+        inputDeviceSelector.addItem("Pink Noise",        51);
 
-        // Select current device
-        const juce::String currentDev = channelRef.getInputDeviceName();
-        if (currentDev.isEmpty() || currentDev == "None")
-        {
+        const juce::String cur = channelRef.getInputDeviceName();
+        if (cur.isEmpty() || cur == "None")
             inputDeviceSelector.setSelectedId(1, juce::dontSendNotification);
-        }
-        else if (currentDev.containsIgnoreCase("Primary In 1") || currentDev.containsIgnoreCase("Mic / L"))
-        {
+        else if (cur.containsIgnoreCase("Mic / L") || cur.containsIgnoreCase("Primary In 1"))
             inputDeviceSelector.setSelectedId(10, juce::dontSendNotification);
-        }
-        else if (currentDev.containsIgnoreCase("Primary In 2"))
-        {
+        else if (cur.containsIgnoreCase("Primary In 2"))
             inputDeviceSelector.setSelectedId(11, juce::dontSendNotification);
-        }
-        else if (currentDev.containsIgnoreCase("Stereo") && currentDev.containsIgnoreCase("Primary"))
-        {
+        else if (cur.containsIgnoreCase("Stereo") && cur.containsIgnoreCase("Primary"))
             inputDeviceSelector.setSelectedId(12, juce::dontSendNotification);
-        }
-        else if (currentDev.containsIgnoreCase("Sine"))
-        {
+        else if (cur.containsIgnoreCase("Sine"))
             inputDeviceSelector.setSelectedId(50, juce::dontSendNotification);
-        }
-        else if (currentDev.containsIgnoreCase("Noise"))
-        {
+        else if (cur.containsIgnoreCase("Noise"))
             inputDeviceSelector.setSelectedId(51, juce::dontSendNotification);
-        }
         else
         {
             int foundId = -1;
-            // Check running apps first
             for (size_t i = 0; i < runningApps.size(); ++i)
             {
-                if (runningApps[i].appName.equalsIgnoreCase(currentDev))
-                {
-                    foundId = 500 + static_cast<int>(i);
-                    break;
-                }
+                if (runningApps[i].appName.equalsIgnoreCase(cur))
+                    { foundId = 500 + static_cast<int>(i); break; }
             }
             if (foundId < 0)
             {
                 for (int i = 0; i < winInputs.size(); ++i)
                 {
-                    if (winInputs[i] == currentDev)
-                    {
-                        foundId = 100 + i;
-                        break;
-                    }
+                    if (winInputs[i] == cur)
+                        { foundId = 100 + i; break; }
                 }
             }
-
             if (foundId > 0)
                 inputDeviceSelector.setSelectedId(foundId, juce::dontSendNotification);
             else
-                inputDeviceSelector.setText(currentDev, juce::dontSendNotification);
+                inputDeviceSelector.setText(cur, juce::dontSendNotification);
         }
     }
 
+    // =========================================================================
+    // Sync UI from channel state
+    // =========================================================================
     void ChannelStrip::updateUIFromChannel()
     {
-        // 1. Fader & Gain Readout
-        const float db = channelRef.getFaderDb();
-        fader.setValue(db, juce::dontSendNotification);
-        if (db <= -59.5f)
-            gainReadout.setText("-inf dB", juce::dontSendNotification);
-        else
-            gainReadout.setText(juce::String(db, 1) + " dB", juce::dontSendNotification);
+        gainKnob.setValue(channelRef.getGainDb(), false);
+        panKnob.setValue(static_cast<double>(channelRef.getPan()), false);
 
-        // 2. Channel Name
+        const float fd = channelRef.getFaderDb();
+        fader.setValue(fd, juce::dontSendNotification);
+        faderReadout.setText(
+            fd <= -59.5f ? "-inf dB" : (juce::String(fd, 1) + " dB"),
+            juce::dontSendNotification);
+
         channelNameLabel.setText(channelRef.getName(), juce::dontSendNotification);
 
-        // 3. Broadcast ON / OFF Buttons
-        const bool isMuted = channelRef.getMute() || channelRef.getDisableOutput();
-        onBtn.setToggleState(!isMuted, juce::dontSendNotification);
-        muteBtn.setToggleState(isMuted, juce::dontSendNotification);
+        // ON / OFF (mutually exclusive, independent of MUTE)
+        const bool isOn = !channelRef.getDisableOutput();
+        onBtn.setToggled(isOn, false);
+        offBtn.setToggled(!isOn, false);
 
-        // 4. Sub-function Utility Buttons
-        directMonitorBtn.setToggleState(channelRef.getDirectMonitor(), juce::dontSendNotification);
-        phaseInvertBtn.setToggleState(channelRef.getPhaseInvert(), juce::dontSendNotification);
-        monoBtn.setToggleState(channelRef.getForceMono(), juce::dontSendNotification);
-
-        // 4. Input Selector Dropdown
-        refreshDeviceList();
+        // Console buttons
+        muteBtn.setToggled(channelRef.getMute(), false);
+        directMonitorBtn.setToggled(channelRef.getDirectMonitor(), false);
+        phaseInvertBtn.setToggled(channelRef.getPhaseInvert(), false);
+        monoBtn.setToggled(channelRef.getForceMono(), false);
+        pflBtn.setToggled(channelRef.getPfl(), false);
+        hpfBtn.setToggled(channelRef.getHpfEnabled(), false);
+        padBtn.setToggled(channelRef.getPadEnabled(), false);
     }
 
+    // =========================================================================
+    // Device selection
+    // =========================================================================
     void ChannelStrip::onDeviceSelected()
     {
         const int id = inputDeviceSelector.getSelectedId();
@@ -282,7 +304,6 @@ namespace dsd
             const juce::String primaryName = MultiDeviceManager::getInstance().getPrimaryInputDeviceName();
             if (primaryName.isNotEmpty() && selectedName.equalsIgnoreCase(primaryName))
             {
-                // Seamlessly use Direct Hardware Input if this device is the default host mic!
                 channelRef.setInputSource(std::make_unique<HardwareInputSource>(0, -1));
             }
             else
@@ -293,66 +314,114 @@ namespace dsd
         }
     }
 
+    // =========================================================================
+    // Button setup
+    // =========================================================================
     void ChannelStrip::setupButtons()
     {
-        // 1. Large Broadcast "ON" Button
-        onBtn.setClickingTogglesState(true);
-        onBtn.setToggleState(true, juce::dontSendNotification);
-        onBtn.setTooltip("Channel ON (Live to mix)");
+        // ── ON / OFF buttons ─────────────────────────────────────────────
+        const bool isOn = !channelRef.getDisableOutput();
+        onBtn.setToggleMode(false);
+        onBtn.setToggled(isOn, false);
+        onBtn.setTooltip("ON: activates channel output. Uses supplied illuminated button.");
         onBtn.onClick = [this]()
         {
-            const bool isOn = onBtn.getToggleState();
-            channelRef.setDisableOutput(!isOn);
-            channelRef.setMute(!isOn);
-            muteBtn.setToggleState(!isOn, juce::dontSendNotification);
+            channelRef.setDisableOutput(false);
+            onBtn.setToggled(true, false);
+            offBtn.setToggled(false, false);
         };
         addAndMakeVisible(onBtn);
 
-        // 2. Broadcast "OFF" (Mute) Button
-        muteBtn.setClickingTogglesState(true);
-        muteBtn.setToggleState(false, juce::dontSendNotification);
-        muteBtn.setTooltip("Channel OFF (Mute)");
-        muteBtn.onClick = [this]()
+        offBtn.setToggleMode(false);
+        offBtn.setToggled(!isOn, false);
+        offBtn.setTooltip("OFF: deactivates channel output. Uses supplied unlit/illuminated button.");
+        offBtn.onClick = [this]()
         {
-            const bool isOff = muteBtn.getToggleState();
-            channelRef.setMute(isOff);
-            channelRef.setDisableOutput(isOff);
-            onBtn.setToggleState(!isOff, juce::dontSendNotification);
+            channelRef.setDisableOutput(true);
+            onBtn.setToggled(false, false);
+            offBtn.setToggled(true, false);
+        };
+        addAndMakeVisible(offBtn);
+
+        // ── MUTE button ──────────────────────────────────────────────────
+        muteBtn.setToggled(channelRef.getMute(), false);
+        muteBtn.setTooltip("MUTE: mutes post-fader output. Independent of ON/OFF.");
+        muteBtn.onToggled = [this](bool state)
+        {
+            channelRef.setMute(state);
         };
         addAndMakeVisible(muteBtn);
 
-        // 3. Compact Sub-function Utility Buttons
-        vstRackBtn.setButtonText("VST");
-        vstRackBtn.setTooltip("Open Channel VST3 Plugin Rack");
-        vstRackBtn.onClick = [this]() { openVstRackWindow(); };
-        addAndMakeVisible(vstRackBtn);
-
-        directMonitorBtn.setClickingTogglesState(true);
-        directMonitorBtn.setTooltip("Direct Monitor (Pre-fader listen)");
-        directMonitorBtn.onClick = [this]()
+        // ── PH button ────────────────────────────────────────────────────
+        phaseInvertBtn.setToggled(channelRef.getPhaseInvert(), false);
+        phaseInvertBtn.setTooltip("PH: phase / polarity invert (180 deg)");
+        phaseInvertBtn.onToggled = [this](bool state)
         {
-            channelRef.setDirectMonitor(directMonitorBtn.getToggleState());
-        };
-        addAndMakeVisible(directMonitorBtn);
-
-        phaseInvertBtn.setButtonText("PH");
-        phaseInvertBtn.setClickingTogglesState(true);
-        phaseInvertBtn.setTooltip("Invert Phase (180 deg)");
-        phaseInvertBtn.onClick = [this]()
-        {
-            channelRef.setPhaseInvert(phaseInvertBtn.getToggleState());
+            channelRef.setPhaseInvert(state);
         };
         addAndMakeVisible(phaseInvertBtn);
 
-        monoBtn.setClickingTogglesState(true);
-        monoBtn.setTooltip("Force Mono Summing");
-        monoBtn.onClick = [this]()
+        // ── MONO button ──────────────────────────────────────────────────
+        monoBtn.setToggled(channelRef.getForceMono(), false);
+        monoBtn.setTooltip("MONO: force mono sum (L+R)*0.5");
+        monoBtn.onToggled = [this](bool state)
         {
-            channelRef.setForceMono(monoBtn.getToggleState());
+            channelRef.setForceMono(state);
         };
         addAndMakeVisible(monoBtn);
+
+        // ── PFL button ───────────────────────────────────────────────────
+        pflBtn.setToggled(channelRef.getPfl(), false);
+        pflBtn.setTooltip("PFL: Pre-Fader Listen - routes pre-fader / post-VST signal to monitor output. Mutually exclusive with DM.");
+        pflBtn.onToggled = [this](bool state)
+        {
+            channelRef.setPfl(state);
+            if (state)
+                directMonitorBtn.setToggled(false, false);
+        };
+        addAndMakeVisible(pflBtn);
+
+        // ── HPF button ───────────────────────────────────────────────────
+        hpfBtn.setButtonEnabled(true);
+        hpfBtn.setToggled(channelRef.getHpfEnabled(), false);
+        hpfBtn.setTooltip("HPF: 80 Hz 2nd-order Butterworth high-pass filter");
+        hpfBtn.onToggled = [this](bool state)
+        {
+            channelRef.setHpfEnabled(state);
+        };
+        addAndMakeVisible(hpfBtn);
+
+        // ── PAD button ───────────────────────────────────────────────────
+        padBtn.setButtonEnabled(true);
+        padBtn.setToggled(channelRef.getPadEnabled(), false);
+        padBtn.setTooltip("PAD: -20 dB input attenuation");
+        padBtn.onToggled = [this](bool state)
+        {
+            channelRef.setPadEnabled(state);
+        };
+        addAndMakeVisible(padBtn);
+
+        // ── VST rack button ──────────────────────────────────────────────
+        vstRackBtn.setToggleMode(false);
+        vstRackBtn.setTooltip("Open VST3 plugin rack for this channel");
+        vstRackBtn.onClick = [this]() { openVstRackWindow(); };
+        addAndMakeVisible(vstRackBtn);
+
+        // ── DM button ────────────────────────────────────────────────────
+        directMonitorBtn.setToggled(channelRef.getDirectMonitor(), false);
+        directMonitorBtn.setTooltip("DM: Direct Monitor - routes post-fader / post-VST signal to monitor output. Mutually exclusive with PFL.");
+        directMonitorBtn.onToggled = [this](bool state)
+        {
+            channelRef.setDirectMonitor(state);
+            if (state)
+                pflBtn.setToggled(false, false);
+        };
+        addAndMakeVisible(directMonitorBtn);
     }
 
+    // =========================================================================
+    // Open VST rack window
+    // =========================================================================
     void ChannelStrip::openVstRackWindow()
     {
         if (activeRackWindow != nullptr)
@@ -360,139 +429,181 @@ namespace dsd
             activeRackWindow->toFront(true);
             return;
         }
-
-        activeRackWindow = new PluginRackWindow("DSD Mixer - " + channelNameLabel.getText() + " VST3 Rack", channelRef);
+        activeRackWindow = new PluginRackWindow(
+            "DSD Mixer - " + channelNameLabel.getText() + " VST3 Rack",
+            channelRef);
     }
 
+    // =========================================================================
+    // Meter update (called from audio thread timer)
+    // =========================================================================
     void ChannelStrip::updateMeterFromAudio()
     {
-        const auto& mv = channelRef.getMeterValues();
+        const auto& mv = channelRef.getMeterInput();
         const float pL = mv.peakL.load(std::memory_order_relaxed);
         const float pR = mv.peakR.load(std::memory_order_relaxed);
         const float peakMax = juce::jmax(pL, pR);
         const float hL = mv.peakHoldL.load(std::memory_order_relaxed);
         const float hR = mv.peakHoldR.load(std::memory_order_relaxed);
-        const bool clip = mv.clipped.load(std::memory_order_relaxed);
+        const bool  clip = mv.clipped.load(std::memory_order_relaxed);
 
         topMeter.setMeterValues(pL, pR, hL, hR, clip);
 
         if (peakMax <= 0.001f)
         {
-            dbfsReadout.setText("-oo dBFS", juce::dontSendNotification);
-            dbfsReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+            preGainDbfsReadout.setText("IN: -oo dBFS", juce::dontSendNotification);
+            preGainDbfsReadout.setColour(juce::Label::textColourId,
+                                         DSDLookAndFeel::getTextSecondary());
         }
         else
         {
             const float db = GainProcessor::linearToDb(peakMax);
-            dbfsReadout.setText(juce::String(db, 1) + " dBFS", juce::dontSendNotification);
+            preGainDbfsReadout.setText("IN: " + juce::String(db, 1) + " dBFS",
+                                       juce::dontSendNotification);
             if (db >= -0.5f)
-                dbfsReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterRed());
+                preGainDbfsReadout.setColour(juce::Label::textColourId,
+                                             DSDLookAndFeel::getMeterRed());
             else if (db >= -6.0f)
-                dbfsReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterYellow());
+                preGainDbfsReadout.setColour(juce::Label::textColourId,
+                                             DSDLookAndFeel::getMeterYellow());
             else
-                dbfsReadout.setColour(juce::Label::textColourId, DSDLookAndFeel::getMeterGreen());
+                preGainDbfsReadout.setColour(juce::Label::textColourId,
+                                             DSDLookAndFeel::getMeterGreen());
         }
 
-        // Update plugin count on VST button
-        int count = channelRef.getPluginRack().getNumPlugins();
-        if (count > 0)
-            vstRackBtn.setButtonText("VST " + juce::String(count));
-        else
-            vstRackBtn.setButtonText("VST");
+        const int vstCount = channelRef.getPluginRack().getNumPlugins();
+        vstRackBtn.setText(vstCount > 0 ? "VST " + juce::String(vstCount) : "VST");
     }
 
+    // =========================================================================
+    // Layout — follows exact reference image proportions
+    // =========================================================================
     void ChannelStrip::resized()
     {
         auto area = getLocalBounds().reduced(4, 4);
 
-        // 1. Device input selector at the top (height: 22px)
-        inputDeviceSelector.setBounds(area.removeFromTop(22));
-
+        // ── 1. Input selector at top (20px) ──────────────────────────
+        inputDeviceSelector.setBounds(area.removeFromTop(20));
         area.removeFromTop(4);
 
-        // 2. Channel OLED Display Area (Height: 88px) - User Sketch Layout
-        auto oledArea = area.removeFromTop(88).reduced(3, 3);
+        // ── 2. OLED display (82px) ────────────────────────────────────
+        auto oledArea = area.removeFromTop(82);
+        oledBounds = oledArea.toFloat();
 
-        // Left Column: Peak LED on top + tall vertical level meter bar
-        auto meterCol = oledArea.removeFromLeft(22);
-        topMeter.setBounds(meterCol);
+        // Row 1: CH badge (left) + Fader dB readout (right) — 15px
+        chNumberBadge.setBounds(oledArea.getX() + 18, oledArea.getY() + 4, 38, 15);
+        faderReadout.setBounds(oledArea.getRight() - 48, oledArea.getY() + 4, 44, 15);
 
-        oledArea.removeFromLeft(4); // Gap between meter and right section
+        // Row 2: Channel name pill box (centered) — 16px
+        const int nameW = std::min(84, oledArea.getWidth() - 16);
+        channelNameLabel.setBounds(oledArea.getCentreX() - nameW / 2, oledArea.getY() + 23, nameW, 16);
 
-        // Right Section: 3 stacked tiers
-        auto rightSection = oledArea;
+        // Row 3: IN: dBFS numeric text (centered) — 13px
+        preGainDbfsReadout.setBounds(oledArea.getX() + 4, oledArea.getY() + 42, oledArea.getWidth() - 8, 13);
 
-        // Tier 1 (Top): CH Badge + Fader dB Readout
-        auto tier1 = rightSection.removeFromTop(22);
-        chNumberBadge.setBounds(tier1.removeFromLeft(40));
-        tier1.removeFromLeft(2);
-        gainReadout.setBounds(tier1);
-
-        rightSection.removeFromTop(3);
-
-        // Tier 2 (Middle): Channel Name (Label) - Full width
-        channelNameLabel.setBounds(rightSection.removeFromTop(26));
-
-        rightSection.removeFromTop(3);
-
-        // Tier 3 (Bottom): dBFS Numeric Readout Meter - Full width
-        dbfsReadout.setBounds(rightSection.removeFromTop(24));
+        // Row 4: Horizontal segmented LED meter bar — 21px
+        topMeter.setBounds(oledArea.getX() + 6, oledArea.getY() + 57, oledArea.getWidth() - 12, 21);
 
         area.removeFromTop(5);
 
-        // 3. Sub-function Utility Buttons in 2x2 Grid Layout
-        auto btnGridArea = area.removeFromTop(48);
-
-        // Row 1: [ VST ] [ DM ]
-        auto btnRow1 = btnGridArea.removeFromTop(22);
-        const int halfBtnW = (btnRow1.getWidth() - 4) / 2;
-        vstRackBtn.setBounds(btnRow1.removeFromLeft(halfBtnW));
-        btnRow1.removeFromLeft(4);
-        directMonitorBtn.setBounds(btnRow1);
-
-        btnGridArea.removeFromTop(4);
-
-        // Row 2: [ PH ] [ MONO ]
-        auto btnRow2 = btnGridArea.removeFromTop(22);
-        phaseInvertBtn.setBounds(btnRow2.removeFromLeft(halfBtnW));
-        btnRow2.removeFromLeft(4);
-        monoBtn.setBounds(btnRow2);
-
+        // ── 3. GAIN knob (62px) ──────────────────────────────────────
+        gainKnob.setBounds(area.removeFromTop(62));
         area.removeFromTop(4);
 
-        // 4. Large Broadcast Buttons at Bottom
-        area.removeFromBottom(4); // Extra cushion at bottom edge
-        auto botArea = area.removeFromBottom(62);
-        onBtn.setBounds(botArea.removeFromTop(32).reduced(2, 0));
-        botArea.removeFromTop(4);
-        muteBtn.setBounds(botArea.removeFromTop(26).reduced(2, 0));
+        // ── 4. PAN knob (left) + VST/DM buttons (right) — 46px ───────
+        {
+            auto panRow = area.removeFromTop(46);
+            const int halfW = panRow.getWidth() / 2;
+            panKnob.setBounds(panRow.removeFromLeft(halfW));
 
-        area.removeFromBottom(5); // Cushion between fader and ON button
+            auto btnSide = panRow;
+            vstRackBtn.setBounds(btnSide.removeFromTop(20));
+            btnSide.removeFromTop(3);
+            directMonitorBtn.setBounds(btnSide.removeFromTop(20));
+        }
+        area.removeFromTop(4);
 
-        // 5. Hardware Broadcast Fader fills remainder with full vertical travel
+        // ── 5. Button matrix row 1: MUTE | PH | MONO (36px) ──────────
+        {
+            auto row1 = area.removeFromTop(36);
+            const int btnW = (row1.getWidth() - 6) / 3;
+            muteBtn.setBounds(row1.removeFromLeft(btnW));
+            row1.removeFromLeft(3);
+            phaseInvertBtn.setBounds(row1.removeFromLeft(btnW));
+            row1.removeFromLeft(3);
+            monoBtn.setBounds(row1);
+        }
+        area.removeFromTop(3);
+
+        // ── 6. Button matrix row 2: PFL | HPF | PAD (36px) ───────────
+        {
+            auto row2 = area.removeFromTop(36);
+            const int btnW = 33;
+            pflBtn.setBounds(row2.removeFromLeft(btnW));
+            row2.removeFromLeft(3);
+            hpfBtn.setBounds(row2.removeFromLeft(btnW));
+            row2.removeFromLeft(3);
+            padBtn.setBounds(row2);
+        }
+        area.removeFromTop(4);
+
+        // ── 7. ON / OFF buttons at bottom (50px) ──────────────────────
+        area.removeFromBottom(2);
+        auto botArea = area.removeFromBottom(50);
+        const int halfW = (botArea.getWidth() - 6) / 2;
+        onBtn.setBounds(botArea.removeFromLeft(halfW));
+        botArea.removeFromLeft(6);
+        offBtn.setBounds(botArea);
+
+        area.removeFromBottom(4);
+
+        // ── 8. Fader fills remaining space ────────────────────────────
         fader.setBounds(area);
     }
 
+    // =========================================================================
+    // Paint — console strip chassis
+    // =========================================================================
     void ChannelStrip::paint(juce::Graphics& g)
     {
         auto bounds = getLocalBounds().toFloat();
 
-        // 1. Authentic console strip body (clean light matte grey chassis panel)
+        // 1. Light grey console chassis body
         g.setColour(DSDLookAndFeel::getConsoleStripBg());
         g.fillRoundedRectangle(bounds, 4.0f);
 
-        // 2. OLED Display recessed cutout (height: 88px)
-        auto oledBounds = juce::Rectangle<float>(bounds.getX() + 4.0f,
-                                                 bounds.getY() + 4.0f + 22.0f + 4.0f,
-                                                 bounds.getWidth() - 8.0f,
-                                                 88.0f);
-        g.setColour(DSDLookAndFeel::getOledBlack());
-        g.fillRoundedRectangle(oledBounds, 4.0f);
-        g.setColour(juce::Colour(0xff3B3F4A));
-        g.drawRoundedRectangle(oledBounds, 4.0f, 1.0f);
-
-        // 3. Bevel border around entire channel strip
+        // 2. Bevel border around entire strip
         g.setColour(DSDLookAndFeel::getConsoleBevel());
         g.drawRoundedRectangle(bounds, 4.0f, 1.2f);
+
+        // 3. OLED display recessed black window
+        if (oledBounds.getWidth() > 0)
+        {
+            g.setColour(DSDLookAndFeel::getOledBlack());
+            g.fillRoundedRectangle(oledBounds, 3.5f);
+            g.setColour(juce::Colour(0xff2A2E38));
+            g.drawRoundedRectangle(oledBounds, 3.5f, 1.0f);
+
+            // Red live indicator dot on left of CH badge
+            const float dotX = oledBounds.getX() + 8.0f;
+            const float dotY = oledBounds.getY() + 11.5f;
+
+            // Outer red halo
+            g.setColour(juce::Colour(0x35FF2020));
+            g.fillEllipse(dotX - 5.0f, dotY - 5.0f, 10.0f, 10.0f);
+
+            // Dark red bezel rim
+            g.setColour(juce::Colour(0xff881010));
+            g.fillEllipse(dotX - 3.8f, dotY - 3.8f, 7.6f, 7.6f);
+
+            // Bright illuminated core
+            g.setColour(juce::Colour(0xffFF2828));
+            g.fillEllipse(dotX - 2.8f, dotY - 2.8f, 5.6f, 5.6f);
+
+            // Specular lens highlight
+            g.setColour(juce::Colours::white.withAlpha(0.65f));
+            g.fillEllipse(dotX - 1.2f, dotY - 1.6f, 1.8f, 1.8f);
+        }
     }
+
 } // namespace dsd

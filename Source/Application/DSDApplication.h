@@ -3,7 +3,9 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Audio/AudioDeviceManager.h"
 #include "Audio/AudioEngine.h"
+#include "Control/ControlServer.h"
 #include "UI/MainWindow.h"
+#include "UI/DSDSystemTray.h"
 #include <memory>
 
 namespace dsd
@@ -27,6 +29,8 @@ namespace dsd
     private:
         std::unique_ptr<AudioEngine> audioEngine;
         std::unique_ptr<AudioDeviceManager> deviceManager;
+        std::unique_ptr<control::ControlServer> controlServer;
         std::unique_ptr<MainWindow> mainWindow;
+        std::unique_ptr<DSDSystemTray> systemTray;
     };
 } // namespace dsd

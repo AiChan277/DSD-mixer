@@ -3,77 +3,87 @@
 #include "UI/RoutingMatrixDialog.h"
 #include "UI/PerformanceMonitorDialog.h"
 #include "UI/StageInspectorDialog.h"
+#include "UI/ControlServerDialog.h"
+#include "Control/ControlServer.h"
 #include "Session/SessionManager.h"
 #include <juce_audio_utils/juce_audio_utils.h>
 
 namespace dsd
 {
-    TopBar::TopBar(AudioDeviceManager& devManager, AudioEngine& audioEngine)
-        : deviceManagerRef(devManager), audioEngineRef(audioEngine)
+    TopBar::TopBar(AudioDeviceManager& devManager, AudioEngine& audioEngine, control::ControlServer* controlServer)
+        : deviceManagerRef(devManager), audioEngineRef(audioEngine), controlServerRef(controlServer)
     {
         titleLabel.setText("DSD MIXER | LEVEL 1", juce::dontSendNotification);
-        titleLabel.setFont(juce::FontOptions(14.0f, juce::Font::bold));
-        titleLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextPrimary());
+        titleLabel.setFont(juce::FontOptions(13.5f, juce::Font::bold));
+        titleLabel.setColour(juce::Label::textColourId, juce::Colour(0xffE2E5EC));
         addAndMakeVisible(titleLabel);
 
-        settingsBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
-        settingsBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
+        auto styleTopBtn = [](juce::TextButton& btn)
+        {
+            btn.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff252830));
+            btn.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xff323640));
+            btn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffD0D4DC));
+            btn.setColour(juce::TextButton::textColourOnId, juce::Colours::white);
+        };
+
+        styleTopBtn(settingsBtn);
         settingsBtn.onClick = [this]() { openAudioSettingsDialog(); };
         addAndMakeVisible(settingsBtn);
 
-        matrixBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getAccentBlue());
-        matrixBtn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xffFFFFFF));
+        styleTopBtn(matrixBtn);
         matrixBtn.onClick = [this]() { openRoutingMatrixDialog(); };
         addAndMakeVisible(matrixBtn);
 
-        perfBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
-        perfBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
+        styleTopBtn(perfBtn);
         perfBtn.onClick = [this]() { openPerformanceDialog(); };
         addAndMakeVisible(perfBtn);
 
-        stageInspectorBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getAccentAmber());
-        stageInspectorBtn.setColour(juce::TextButton::textColourOffId, juce::Colour(0xff180800));
+        styleTopBtn(stageInspectorBtn);
         stageInspectorBtn.onClick = [this]() { openStageInspectorDialog(); };
         addAndMakeVisible(stageInspectorBtn);
 
-        saveSessionBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
-        saveSessionBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
+        styleTopBtn(remoteBtn);
+        remoteBtn.onClick = [this]() { openControlServerDialog(); };
+        addAndMakeVisible(remoteBtn);
+
+        styleTopBtn(saveSessionBtn);
         saveSessionBtn.onClick = [this]() { onSaveSessionClicked(); };
         addAndMakeVisible(saveSessionBtn);
 
-        loadSessionBtn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
-        loadSessionBtn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextPrimary());
+        styleTopBtn(loadSessionBtn);
         loadSessionBtn.onClick = [this]() { onLoadSessionClicked(); };
         addAndMakeVisible(loadSessionBtn);
 
         sampleRateLabel.setText("48000 Hz", juce::dontSendNotification);
         sampleRateLabel.setJustificationType(juce::Justification::centred);
-        sampleRateLabel.setFont(juce::FontOptions(11.0f));
-        sampleRateLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
-        sampleRateLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
+        sampleRateLabel.setFont(juce::FontOptions(10.0f));
+        sampleRateLabel.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        sampleRateLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9CA3AF));
         addAndMakeVisible(sampleRateLabel);
 
         bufferSizeLabel.setText("128 smp (2.67 ms)", juce::dontSendNotification);
         bufferSizeLabel.setJustificationType(juce::Justification::centred);
-        bufferSizeLabel.setFont(juce::FontOptions(11.0f));
-        bufferSizeLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
-        bufferSizeLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
+        bufferSizeLabel.setFont(juce::FontOptions(10.0f));
+        bufferSizeLabel.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        bufferSizeLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9CA3AF));
         addAndMakeVisible(bufferSizeLabel);
 
         engineStatusBadge.setText("AUDIO OK", juce::dontSendNotification);
         engineStatusBadge.setJustificationType(juce::Justification::centred);
-        engineStatusBadge.setFont(juce::FontOptions(11.0f, juce::Font::bold));
-        engineStatusBadge.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getAccentGreen().withAlpha(0.25f));
-        engineStatusBadge.setColour(juce::Label::outlineColourId, DSDLookAndFeel::getAccentGreen());
-        engineStatusBadge.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentGreen());
+        engineStatusBadge.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        engineStatusBadge.setColour(juce::Label::backgroundColourId, juce::Colour(0xff161A22));
+        engineStatusBadge.setColour(juce::Label::outlineColourId, juce::Colour(0xff3B4252));
+        engineStatusBadge.setColour(juce::Label::textColourId, juce::Colour(0xffD8DEE9));
         addAndMakeVisible(engineStatusBadge);
 
         cpuLoadLabel.setText("DSP: 0.0%", juce::dontSendNotification);
         cpuLoadLabel.setJustificationType(juce::Justification::centred);
-        cpuLoadLabel.setFont(juce::FontOptions(11.0f));
-        cpuLoadLabel.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getOledBlack());
-        cpuLoadLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextOnOled());
+        cpuLoadLabel.setFont(juce::FontOptions(10.0f, juce::Font::bold));
+        cpuLoadLabel.setColour(juce::Label::backgroundColourId, juce::Colours::transparentBlack);
+        cpuLoadLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentAmber());
         addAndMakeVisible(cpuLoadLabel);
+
+        updateStats();
     }
 
     void TopBar::openAudioSettingsDialog()
@@ -152,6 +162,25 @@ namespace dsd
         opts.launchAsync();
     }
 
+    void TopBar::openControlServerDialog()
+    {
+        if (controlServerRef == nullptr)
+            return;
+
+        auto dlg = std::make_unique<ControlServerDialog>(*controlServerRef);
+
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(dlg.release());
+        opts.dialogTitle = "DSD Mixer - Remote Control Surface & Pairing";
+        opts.componentToCentreAround = this;
+        opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = true;
+        opts.resizable = false;
+
+        opts.launchAsync();
+    }
+
     void TopBar::onSaveSessionClicked()
     {
         auto chooser = std::make_shared<juce::FileChooser>("Save DSD Mixer Session",
@@ -216,19 +245,42 @@ namespace dsd
         sampleRateLabel.setText(juce::String::formatted("%.0f Hz", sr), juce::dontSendNotification);
         bufferSizeLabel.setText(juce::String::formatted("%d smp (%.2f ms)", bs, (bs / sr) * 1000.0), juce::dontSendNotification);
 
+        if (controlServerRef != nullptr)
+        {
+            if (controlServerRef->isRunning())
+            {
+                int authClients = controlServerRef->getAuthenticatedClientCount();
+                if (authClients > 0)
+                {
+                    remoteBtn.setButtonText(juce::String::formatted("REMOTE (%d)", authClients));
+                    remoteBtn.setToggleState(true, juce::dontSendNotification);
+                }
+                else
+                {
+                    remoteBtn.setButtonText("REMOTE (0)");
+                    remoteBtn.setToggleState(false, juce::dontSendNotification);
+                }
+            }
+            else
+            {
+                remoteBtn.setButtonText("REMOTE (OFF)");
+                remoteBtn.setToggleState(false, juce::dontSendNotification);
+            }
+        }
+
         if (glitch || xruns > 0)
         {
             engineStatusBadge.setText(juce::String::formatted("GLITCH (%llu)", xruns), juce::dontSendNotification);
-            engineStatusBadge.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getAccentRed().withAlpha(0.25f));
-            engineStatusBadge.setColour(juce::Label::outlineColourId, DSDLookAndFeel::getAccentRed());
-            engineStatusBadge.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentRed());
+            engineStatusBadge.setColour(juce::Label::backgroundColourId, juce::Colour(0xff3B1414));
+            engineStatusBadge.setColour(juce::Label::outlineColourId, juce::Colour(0xffFF3B30));
+            engineStatusBadge.setColour(juce::Label::textColourId, juce::Colour(0xffFF453A));
         }
         else
         {
             engineStatusBadge.setText("AUDIO OK", juce::dontSendNotification);
-            engineStatusBadge.setColour(juce::Label::backgroundColourId, DSDLookAndFeel::getAccentGreen().withAlpha(0.25f));
-            engineStatusBadge.setColour(juce::Label::outlineColourId, DSDLookAndFeel::getAccentGreen());
-            engineStatusBadge.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentGreen());
+            engineStatusBadge.setColour(juce::Label::backgroundColourId, juce::Colour(0xff161A22));
+            engineStatusBadge.setColour(juce::Label::outlineColourId, juce::Colour(0xff3B4252));
+            engineStatusBadge.setColour(juce::Label::textColourId, juce::Colour(0xffD8DEE9));
         }
 
         repaint();
@@ -236,48 +288,95 @@ namespace dsd
 
     void TopBar::resized()
     {
-        auto bounds = getLocalBounds().reduced(8, 6);
+        const int barH = getHeight();
+        const int btnH = 26;
+        const int btnY = (barH - btnH) / 2;
 
-        titleLabel.setBounds(bounds.removeFromLeft(160));
-        bounds.removeFromLeft(10);
+        int leftX = 12;
 
-        settingsBtn.setBounds(bounds.removeFromLeft(105));
-        bounds.removeFromLeft(6);
+        // Title on the left
+        titleLabel.setBounds(leftX, btnY, 155, btnH);
+        leftX += 165;
 
-        matrixBtn.setBounds(bounds.removeFromLeft(125));
-        bounds.removeFromLeft(6);
+        // Configuration & tool buttons (26px uniform height)
+        settingsBtn.setBounds(leftX, btnY, 100, btnH);
+        leftX += 105;
 
-        perfBtn.setBounds(bounds.removeFromLeft(110));
-        bounds.removeFromLeft(6);
+        matrixBtn.setBounds(leftX, btnY, 115, btnH);
+        leftX += 120;
 
-        stageInspectorBtn.setBounds(bounds.removeFromLeft(115));
-        bounds.removeFromLeft(6);
+        perfBtn.setBounds(leftX, btnY, 100, btnH);
+        leftX += 105;
 
-        saveSessionBtn.setBounds(bounds.removeFromLeft(85));
-        bounds.removeFromLeft(4);
+        stageInspectorBtn.setBounds(leftX, btnY, 105, btnH);
+        leftX += 112;
 
-        loadSessionBtn.setBounds(bounds.removeFromLeft(85));
-        bounds.removeFromLeft(10);
+        remoteBtn.setBounds(leftX, btnY, 100, btnH);
+        leftX += 108;
 
-        sampleRateLabel.setBounds(bounds.removeFromLeft(75));
-        bounds.removeFromLeft(6);
+        // Vertical divider separator
+        sessionDividerX = static_cast<float>(leftX + 4);
+        leftX += 14;
 
-        bufferSizeLabel.setBounds(bounds.removeFromLeft(120));
-        bounds.removeFromLeft(8);
+        // Session buttons
+        saveSessionBtn.setBounds(leftX, btnY, 80, btnH);
+        leftX += 85;
 
-        engineStatusBadge.setBounds(bounds.removeFromLeft(95));
-        bounds.removeFromLeft(8);
+        loadSessionBtn.setBounds(leftX, btnY, 80, btnH);
 
-        cpuLoadLabel.setBounds(bounds.removeFromLeft(140));
+        // Technical status & diagnostics pinned to the right
+        int rightX = getWidth() - 12;
+
+        const int podW = 398;
+        statusPodBounds = juce::Rectangle<float>(static_cast<float>(rightX - podW), static_cast<float>(btnY), static_cast<float>(podW), static_cast<float>(btnH));
+
+        // Layout items from right to left inside status pod
+        cpuLoadLabel.setBounds(rightX - 114, btnY, 110, btnH);
+        rightX -= 118;
+
+        engineStatusBadge.setBounds(rightX - 80, btnY + 2, 76, btnH - 4);
+        rightX -= 84;
+
+        bufferSizeLabel.setBounds(rightX - 120, btnY, 116, btnH);
+        rightX -= 124;
+
+        sampleRateLabel.setBounds(rightX - 70, btnY, 66, btnH);
     }
 
     void TopBar::paint(juce::Graphics& g)
     {
         auto bounds = getLocalBounds().toFloat();
-        g.setColour(DSDLookAndFeel::getConsolePanelBg());
+        // Top bar chassis background
+        g.setColour(juce::Colour(0xff181A20));
         g.fillRect(bounds);
 
-        g.setColour(DSDLookAndFeel::getConsoleBevel());
-        g.fillRect(0.0f, bounds.getBottom() - 1.0f, bounds.getWidth(), 1.0f);
+        // Bottom chassis border
+        g.setColour(juce::Colour(0xff2A2E38));
+        g.fillRect(0.0f, bounds.getBottom() - 1.2f, bounds.getWidth(), 1.2f);
+
+        // Session divider line
+        if (sessionDividerX > 0.0f)
+        {
+            g.setColour(juce::Colour(0xff2E323C));
+            g.drawVerticalLine(static_cast<int>(sessionDividerX), 11.0f, bounds.getBottom() - 11.0f);
+        }
+
+        // Recessed OLED status pod
+        if (statusPodBounds.getWidth() > 0.0f)
+        {
+            g.setColour(juce::Colour(0xff0A0B0E));
+            g.fillRoundedRectangle(statusPodBounds, 3.5f);
+            g.setColour(juce::Colour(0xff252932));
+            g.drawRoundedRectangle(statusPodBounds, 3.5f, 1.0f);
+
+            // Subtle vertical dividers between status fields
+            g.setColour(juce::Colour(0xff1A1D24));
+            float div1 = statusPodBounds.getX() + 72.0f;
+            float div2 = div1 + 124.0f;
+            float div3 = div2 + 84.0f;
+            g.drawVerticalLine(static_cast<int>(div1), statusPodBounds.getY() + 4.0f, statusPodBounds.getBottom() - 4.0f);
+            g.drawVerticalLine(static_cast<int>(div2), statusPodBounds.getY() + 4.0f, statusPodBounds.getBottom() - 4.0f);
+            g.drawVerticalLine(static_cast<int>(div3), statusPodBounds.getY() + 4.0f, statusPodBounds.getBottom() - 4.0f);
+        }
     }
 } // namespace dsd

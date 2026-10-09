@@ -59,7 +59,7 @@ namespace dsd
         std::atomic<int> deviceChannelOffset{-1}; // e.g. 0 for Ch 1/2, 2 for Ch 3/4, -1 for null/unassigned
         std::atomic<float> faderDb{0.0f};
         std::atomic<bool> mute{false};
-        std::atomic<bool> monitor{true};
+        std::atomic<bool> monitor{false};
 
         GainProcessor faderProcessor;
         MeterProcessor meterProcessor;

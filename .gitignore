@@ -67,3 +67,33 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+node_modules/
+
+# AI / IDE / Editor config & local tooling
+.opencode/
+opencode.jsonc
+.vscode/
+.vs/
+.idea/
+.claude/
+.gemini/
+
+# Debug & snapshot scratch files
+debug_log.txt
+trigger_snapshot.txt
+capture.ps1
+hs_err_pid*.log
+replay_pid*.log
+*_snapshot.png
+*_screenshot.png
+
+# Root-level scratch/crop PNGs (only keep required CMake binary data assets)
+/*.png
+!/LOGO.png
+!/Fader.png
+!/OnButton.png
+!/OffButton.png
+!/Knob.png
+!/BtnVst.png
+!/BtnDm.png
+

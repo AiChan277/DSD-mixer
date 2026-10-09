@@ -16,6 +16,71 @@
 #include "Routing/RoutingEngine.h"
 #include "Output/OutputManager.h"
 #include "Session/SessionManager.h"
+#include "Plugin/PluginRack.h"
+
+class MockAudioPluginInstance : public juce::AudioPluginInstance
+{
+public:
+    MockAudioPluginInstance(const juce::String& name, float gainFactor, float offset = 0.0f)
+        : AudioPluginInstance(BusesProperties().withInput("Input", juce::AudioChannelSet::stereo(), true)
+                                              .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+          pluginName(name), multiplier(gainFactor), addend(offset)
+    {
+    }
+
+    const juce::String getName() const override { return pluginName; }
+    void prepareToPlay(double, int) override {}
+    void releaseResources() override {}
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        {
+            auto* d = buffer.getWritePointer(ch);
+            for (int i = 0; i < buffer.getNumSamples(); ++i)
+                d[i] = d[i] * multiplier + addend;
+        }
+    }
+    double getTailLengthSeconds() const override { return 0.0; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return "Default"; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock& destData) override
+    {
+        juce::String stateStr = juce::String(multiplier) + "," + juce::String(addend);
+        destData.replaceAll(stateStr.toRawUTF8(), stateStr.getNumBytesAsUTF8());
+    }
+    void setStateInformation(const void* data, int sizeInBytes) override
+    {
+        if (sizeInBytes > 0 && data != nullptr)
+        {
+            juce::String s(static_cast<const char*>(data), (size_t)sizeInBytes);
+            auto tokens = juce::StringArray::fromTokens(s, ",", "");
+            if (tokens.size() >= 2)
+            {
+                multiplier = tokens[0].getFloatValue();
+                addend = tokens[1].getFloatValue();
+            }
+        }
+    }
+    void fillInPluginDescription(juce::PluginDescription& desc) const override
+    {
+        desc.name = pluginName;
+        desc.descriptiveName = pluginName;
+        desc.pluginFormatName = "InternalMock";
+        desc.category = "Test";
+        desc.fileOrIdentifier = pluginName + "_uid";
+    }
+
+    juce::String pluginName;
+    float multiplier{1.0f};
+    float addend{0.0f};
+};
 
 void testGainProcessor()
 {
@@ -433,6 +498,14 @@ void testSessionSaveLoad()
     ch0->setPan(-0.25f);
     ch0->setInputDeviceName("Primary In 1 (Mic / L)");
     ch0->setInputChannelIndex(0);
+    ch0->setDisableOutput(true);
+    ch0->setPhaseInvert(true);
+    ch0->setForceMono(true);
+    ch0->setDirectMonitor(true);
+
+    auto plug = std::make_unique<MockAudioPluginInstance>("MockEQ", 1.0f, 0.0f);
+    auto pId = ch0->getPluginRack().addPlugin(std::move(plug), "MockEQ");
+    ch0->getPluginRack().setBypassById(pId, true);
 
     ch1->setName("Spotify Music");
     ch1->setGainDb(0.0f);
@@ -463,11 +536,26 @@ void testSessionSaveLoad()
     assert(saved);
     assert(sessionFile.existsAsFile());
 
+    // Verify JSON contents have new channel attributes and plugin serialization
+    juce::String jsonStr = sessionFile.loadFileAsString();
+    assert(jsonStr.contains("\"disableOutput\": true"));
+    assert(jsonStr.contains("\"phaseInvert\": true"));
+    assert(jsonStr.contains("\"forceMono\": true"));
+    assert(jsonStr.contains("\"directMonitor\": true"));
+    assert(jsonStr.contains("\"MockEQ\""));
+    assert(jsonStr.contains("\"bypassed\": true"));
+    assert(jsonStr.contains("\"instanceId\":"));
+
     // Scramble values to verify restoration
     ch0->setName("Changed");
     ch0->setGainDb(0.0f);
     ch0->setFaderDb(0.0f);
+    ch0->setDisableOutput(false);
+    ch0->setPhaseInvert(false);
+    ch0->setForceMono(false);
+    ch0->setDirectMonitor(false);
     ch0->setInputDeviceName("None");
+    ch0->getPluginRack().clear();
 
     ch1->setName("Changed");
     ch1->setMute(false);
@@ -485,6 +573,10 @@ void testSessionSaveLoad()
     assert(std::abs(ch0->getGainDb() - 3.5f) < 0.01f);
     assert(std::abs(ch0->getFaderDb() - (-4.0f)) < 0.01f);
     assert(std::abs(ch0->getPan() - (-0.25f)) < 0.01f);
+    assert(ch0->getDisableOutput() == true);
+    assert(ch0->getPhaseInvert() == true);
+    assert(ch0->getForceMono() == true);
+    assert(ch0->getDirectMonitor() == true);
     assert(ch0->getInputDeviceName() == "Primary In 1 (Mic / L)");
     assert(ch0->getInputChannelIndex() == 0);
     assert(ch0->getInputSource() != nullptr);
@@ -571,6 +663,546 @@ void testPerformanceTelemetryAndOverrun()
     std::cout << "[PASS] Performance Telemetry, True Peak & Overrun tests passed cleanly." << std::endl;
 }
 
+void testVstBypassAndReorder()
+{
+    std::cout << "[TEST] Running VST Bypass, Reorder & Processing Order tests..." << std::endl;
+
+    dsd::PluginRack rack;
+    rack.prepare(48000.0, 128);
+
+    // Create 2 mock plugins:
+    // Plugin A: multiply by 2.0, add 1.0 ( y = 2x + 1 )
+    // Plugin B: multiply by 3.0, add 0.0 ( y = 3x )
+    auto plugA = std::make_unique<MockAudioPluginInstance>("PluginA", 2.0f, 1.0f);
+    auto plugB = std::make_unique<MockAudioPluginInstance>("PluginB", 3.0f, 0.0f);
+
+    auto idA = rack.addPlugin(std::move(plugA), "Plugin A");
+    auto idB = rack.addPlugin(std::move(plugB), "Plugin B");
+
+    assert(idA != 0);
+    assert(idB != 0);
+    assert(idA != idB);
+    assert(rack.getNumPlugins() == 2);
+
+    // Initial order: A (index 0), B (index 1)
+    assert(rack.getSlot(0)->instanceId == idA);
+    assert(rack.getSlot(1)->instanceId == idB);
+
+    // Test buffer: x = 1.0f
+    juce::AudioBuffer<float> buf(2, 128);
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            buf.setSample(ch, i, 1.0f);
+
+    juce::MidiBuffer midi;
+    rack.processBlock(buf, midi, 128);
+
+    // Expected: First A: 1.0 * 2 + 1 = 3.0. Then B: 3.0 * 3 = 9.0.
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            assert(std::abs(buf.getSample(ch, i) - 9.0f) < 0.001f);
+
+    // 1. Test Bypass Plugin A
+    rack.setBypassById(idA, true);
+    assert(rack.isBypassedById(idA) == true);
+    assert(rack.isBypassedById(idB) == false);
+
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            buf.setSample(ch, i, 1.0f);
+
+    rack.processBlock(buf, midi, 128);
+    // Expected: A bypassed -> x stays 1.0. B active -> 1.0 * 3 = 3.0.
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            assert(std::abs(buf.getSample(ch, i) - 3.0f) < 0.001f);
+
+    // 2. Test Bypass Both
+    rack.setBypassById(idB, true);
+    assert(rack.isBypassedById(idA) == true);
+    assert(rack.isBypassedById(idB) == true);
+
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            buf.setSample(ch, i, 1.0f);
+
+    rack.processBlock(buf, midi, 128);
+    // Both bypassed -> x stays 1.0.
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            assert(std::abs(buf.getSample(ch, i) - 1.0f) < 0.001f);
+
+    // 3. Unbypass A, keep B bypassed
+    rack.setBypassById(idA, false);
+    assert(rack.isBypassedById(idA) == false);
+    assert(rack.isBypassedById(idB) == true);
+
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            buf.setSample(ch, i, 1.0f);
+
+    rack.processBlock(buf, midi, 128);
+    // A active (1.0 * 2 + 1 = 3.0). B bypassed -> 3.0.
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            assert(std::abs(buf.getSample(ch, i) - 3.0f) < 0.001f);
+
+    // 4. Unbypass B: both active again
+    rack.setBypassById(idB, false);
+
+    // 5. Test Reordering: Move B (currently at index 1) to target index 0
+    bool moved = rack.movePluginById(idB, 0);
+    assert(moved);
+    assert(rack.getSlot(0)->instanceId == idB);
+    assert(rack.getSlot(1)->instanceId == idA);
+
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            buf.setSample(ch, i, 1.0f);
+
+    rack.processBlock(buf, midi, 128);
+    // Now order is B, then A!
+    // First B: 1.0 * 3 = 3.0.
+    // Then A: 3.0 * 2 + 1 = 7.0!
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            assert(std::abs(buf.getSample(ch, i) - 7.0f) < 0.001f);
+
+    // 6. Test Removal by ID
+    bool removed = rack.removePluginById(idB);
+    assert(removed);
+    assert(rack.getNumPlugins() == 1);
+    assert(rack.getSlot(0)->instanceId == idA);
+
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            buf.setSample(ch, i, 1.0f);
+
+    rack.processBlock(buf, midi, 128);
+    // Only A: 1.0 * 2 + 1 = 3.0.
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < 128; ++i)
+            assert(std::abs(buf.getSample(ch, i) - 3.0f) < 0.001f);
+
+    std::cout << "[PASS] VST Bypass, Reorder & Processing Order tests passed." << std::endl;
+}
+
+void testPreGainMetering()
+{
+    std::cout << "[TEST] Running Pre-Gain Metering (Stage A) tests..." << std::endl;
+
+    dsd::AudioChannel ch(0, "CH 01");
+    ch.prepare(48000.0, 128);
+
+    // Set input source to Sine generator with fixed peak 0.12589f (~ -18 dBFS)
+    const float inputAmplitude = 0.12589f;
+    auto sine = std::make_unique<dsd::SineGeneratorSource>(1000.0f, inputAmplitude);
+    sine->setEnabled(true);
+    ch.setInputSource(std::move(sine));
+
+    // Apply +12 dB gain (+12 dB = ~3.98x)
+    ch.setGainDb(12.0f);
+
+    juce::AudioBuffer<float> devIn(2, 128);
+    devIn.clear();
+
+    // Process a block
+    ch.processBlock(devIn, 128);
+
+    // Meter Pre-Gain (Stage A) must read the raw input (~0.12589f) unaffected by +12 dB gain
+    const auto& preGain = ch.getMeterPreGain();
+    assert(std::abs(preGain.peakL.load() - inputAmplitude) < 0.02f);
+
+    // Meter Post-Gain must reflect the +12 dB gain (~0.12589 * 3.98 ~ 0.50f)
+    const auto& postGain = ch.getMeterPostGain();
+    assert(postGain.peakL.load() > 0.40f);
+    assert(postGain.peakL.load() > preGain.peakL.load() * 2.5f);
+
+    // Now test extreme cut: Gain = -60 dB
+    ch.setGainDb(-60.0f);
+    ch.processBlock(devIn, 128);
+
+    // Stage A Pre-Gain meter must STILL read ~0.12589f
+    const auto& preGain2 = ch.getMeterPreGain();
+    assert(std::abs(preGain2.peakL.load() - inputAmplitude) < 0.02f);
+
+    // Post-gain meter must be 0
+    const auto& postGain2 = ch.getMeterPostGain();
+    assert(postGain2.peakL.load() < 0.001f);
+
+    std::cout << "[PASS] Pre-Gain Metering (Stage A) tests passed." << std::endl;
+}
+
+void testGainAndFaderControls()
+{
+    std::cout << "[TEST] Running Gain and Fader controls tests..." << std::endl;
+
+    dsd::AudioChannel ch(0, "CH 01");
+    ch.prepare(48000.0, 128);
+
+    auto sine = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.5f);
+    sine->setEnabled(true);
+    ch.setInputSource(std::move(sine));
+
+    juce::AudioBuffer<float> devIn(2, 128);
+    devIn.clear();
+
+    // 1. Gain at 0 dB, Fader at 0 dB
+    ch.setGainDb(0.0f);
+    ch.setFaderDb(0.0f);
+    ch.processBlock(devIn, 128);
+
+    float postGain1 = ch.getMeterPostGain().peakL.load();
+    float postFader1 = ch.getMeterPostFader().peakL.load();
+    assert(std::abs(postGain1 - 0.5f) < 0.02f);
+    assert(std::abs(postFader1 - 0.5f) < 0.02f);
+
+    // 2. Gain at +6 dB (~2x -> 1.0f), Fader at -6 dB (~0.5x -> 0.5f)
+    ch.setGainDb(6.0f);
+    ch.setFaderDb(-6.0f);
+    ch.processBlock(devIn, 128);
+
+    float postGain2 = ch.getMeterPostGain().peakL.load();
+    float postFader2 = ch.getMeterPostFader().peakL.load();
+    assert(std::abs(postGain2 - 1.0f) < 0.05f);
+    assert(std::abs(postFader2 - 0.5f) < 0.05f);
+
+    // 3. Gain at -60 dB (silence)
+    ch.setGainDb(-60.0f);
+    ch.processBlock(devIn, 128);
+    assert(ch.getMeterPostGain().peakL.load() < 0.001f);
+    assert(ch.getMeterPostFader().peakL.load() < 0.001f);
+
+    std::cout << "[PASS] Gain and Fader controls tests passed." << std::endl;
+}
+
+void testOnOffVsMuteSemantics()
+{
+    std::cout << "[TEST] Running ON/OFF vs MUTE decoupling semantics tests..." << std::endl;
+
+    dsd::AudioChannel ch(0, "CH 01");
+    ch.prepare(48000.0, 128);
+
+    auto sine = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.5f);
+    sine->setEnabled(true);
+    ch.setInputSource(std::move(sine));
+
+    juce::AudioBuffer<float> devIn(2, 128);
+    devIn.clear();
+
+    // Verify initial states
+    assert(ch.getDisableOutput() == false);
+    assert(ch.getMute() == false);
+
+    // 1. Toggle ON/OFF (disableOutput) -> does NOT touch Mute
+    ch.setDisableOutput(true);
+    assert(ch.getDisableOutput() == true);
+    assert(ch.getMute() == false);
+
+    ch.processBlock(devIn, 128);
+    // Channel processing itself keeps running (meters are active)
+    assert(ch.getMeterPreGain().peakL.load() > 0.4f);
+    assert(ch.getMeterPostFader().peakL.load() > 0.4f);
+
+    // 2. Toggle MUTE -> does NOT touch disableOutput
+    ch.setDisableOutput(false);
+    ch.setMute(true);
+    assert(ch.getDisableOutput() == false);
+    assert(ch.getMute() == true);
+
+    ch.processBlock(devIn, 128);
+    // With Mute, PreGain is still active, but PostFader is 0.0f
+    assert(ch.getMeterPreGain().peakL.load() > 0.4f);
+    assert(ch.getMeterPostFader().peakL.load() < 0.001f);
+
+    // Unmute
+    ch.setMute(false);
+    assert(ch.getMute() == false);
+    assert(ch.getDisableOutput() == false);
+
+    std::cout << "[PASS] ON/OFF vs MUTE decoupling semantics tests passed." << std::endl;
+}
+
+void testHpfDsp()
+{
+    std::cout << "[TEST] Running HPF (80 Hz Butterworth 2nd-order) DSP tests..." << std::endl;
+
+    dsd::AudioChannel ch(0, "HPF Channel");
+    ch.prepare(48000.0, 256);
+
+    juce::AudioBuffer<float> devIn(2, 256);
+    devIn.clear();
+
+    // 1. Low-frequency test (30 Hz sine wave, well below 80 Hz cutoff)
+    auto lfSine = std::make_unique<dsd::SineGeneratorSource>(30.0f, 0.8f);
+    lfSine->setEnabled(true);
+    ch.setInputSource(std::move(lfSine));
+
+    // HPF OFF: low-frequency content passes unattenuated
+    ch.setHpfEnabled(false);
+    for (int i = 0; i < 10; ++i)
+        ch.processBlock(devIn, 256);
+
+    float outLfBypass = ch.getOutputBuffer().getMagnitude(0, 0, 256);
+    assert(outLfBypass > 0.7f); // Full 30 Hz signal passes
+
+    // HPF ON: 30 Hz should be significantly attenuated (>12 dB down for 80 Hz 2nd-order)
+    ch.setHpfEnabled(true);
+    for (int i = 0; i < 20; ++i) // allow IIR filter state to settle
+        ch.processBlock(devIn, 256);
+
+    float outLfFiltered = ch.getOutputBuffer().getMagnitude(0, 0, 256);
+    assert(outLfFiltered < 0.25f); // 30 Hz attenuated significantly (< 25% of input)
+    assert(outLfFiltered < outLfBypass * 0.35f);
+
+    // 2. High-frequency test (1000 Hz sine wave, well above 80 Hz cutoff)
+    auto hfSine = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.8f);
+    hfSine->setEnabled(true);
+    ch.setInputSource(std::move(hfSine));
+
+    for (int i = 0; i < 10; ++i)
+        ch.processBlock(devIn, 256);
+
+    float outHfFiltered = ch.getOutputBuffer().getMagnitude(0, 0, 256);
+    assert(outHfFiltered > 0.75f); // 1 kHz passes cleanly with virtually zero loss
+
+    std::cout << "[PASS] HPF DSP tests passed cleanly." << std::endl;
+}
+
+void testPadDsp()
+{
+    std::cout << "[TEST] Running PAD (-20 dB input attenuation) DSP tests..." << std::endl;
+
+    dsd::AudioChannel ch(0, "PAD Channel");
+    ch.prepare(48000.0, 128);
+
+    auto sine = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.5f);
+    sine->setEnabled(true);
+    ch.setInputSource(std::move(sine));
+
+    juce::AudioBuffer<float> devIn(2, 128);
+    devIn.clear();
+
+    ch.setGainDb(0.0f);
+    ch.setFaderDb(0.0f);
+
+    // 1. PAD OFF: normal signal level
+    ch.setPadEnabled(false);
+    ch.processBlock(devIn, 128);
+
+    float preGainOff = ch.getMeterPreGain().peakL.load();
+    float postGainOff = ch.getMeterPostGain().peakL.load();
+    assert(std::abs(preGainOff - 0.5f) < 0.02f);
+    assert(std::abs(postGainOff - 0.5f) < 0.02f);
+
+    // 2. PAD ON: -20 dB attenuation (~0.1x linear, 0.5 * 0.1 = 0.05)
+    // PRE-GAIN meter must STILL read raw input (~0.5f) before PAD!
+    ch.setPadEnabled(true);
+    ch.processBlock(devIn, 128);
+
+    float preGainOn = ch.getMeterPreGain().peakL.load();
+    float postGainOn = ch.getMeterPostGain().peakL.load();
+
+    // Stage A PRE-GAIN meter remains untouched by PAD (measures raw input)
+    assert(std::abs(preGainOn - 0.5f) < 0.02f);
+
+    // Stage B Post-Gain meter and processed signal must be attenuated by ~-20 dB (0.05f)
+    assert(std::abs(postGainOn - 0.05f) < 0.015f);
+
+    std::cout << "[PASS] PAD DSP tests passed cleanly." << std::endl;
+}
+
+void testDirectMonitorAndPflRouting()
+{
+    std::cout << "[TEST] Running Direct Monitor (DM), PFL, and Mutual Exclusion routing tests..." << std::endl;
+
+    dsd::ChannelManager chMgr;
+    chMgr.initializeDefaultChannels(2);
+    chMgr.prepare(48000.0, 128);
+
+    dsd::OutputManager outMgr;
+    outMgr.initializeDefaultOutputs(2);
+    outMgr.prepare(48000.0, 128);
+
+    auto* ch0 = chMgr.getChannel(0);
+    auto* ch1 = chMgr.getChannel(1);
+    auto* outMain = outMgr.getOutput(0);
+    auto* outMon  = outMgr.getOutput(1);
+
+    outMain->setMonitor(false); // Program mix
+    outMon->setMonitor(true);   // Monitor bus
+
+    // ── 1. Test PFL / DM Mutual Exclusion on Channel ──
+    ch0->setDirectMonitor(true);
+    assert(ch0->getDirectMonitor() == true);
+    assert(ch0->getPfl() == false);
+
+    ch0->setPfl(true); // Activating PFL automatically turns DM OFF
+    assert(ch0->getPfl() == true);
+    assert(ch0->getDirectMonitor() == false);
+
+    ch0->setDirectMonitor(true); // Activating DM automatically turns PFL OFF
+    assert(ch0->getDirectMonitor() == true);
+    assert(ch0->getPfl() == false);
+
+    ch0->setDirectMonitor(false);
+    assert(ch0->getDirectMonitor() == false);
+    assert(ch0->getPfl() == false);
+
+    // ── 2. Test Direct Monitor (DM) follows fader and VST ──
+    auto sine0 = std::make_unique<dsd::SineGeneratorSource>(1000.0f, 0.8f);
+    sine0->setEnabled(true);
+    ch0->setInputSource(std::move(sine0));
+    ch0->setGainDb(0.0f);
+    ch0->setFaderDb(0.0f);
+    ch0->setDirectMonitor(true);
+
+    auto sine1 = std::make_unique<dsd::SineGeneratorSource>(500.0f, 0.3f);
+    sine1->setEnabled(true);
+    ch1->setInputSource(std::move(sine1));
+    ch1->setGainDb(0.0f);
+    ch1->setFaderDb(0.0f);
+    ch1->setDirectMonitor(false);
+
+    dsd::RoutingEngine router;
+    router.setRouteEnabled(0, 0, true);
+    router.setRouteGainDb(0, 0, 0.0f);
+    router.setRouteEnabled(0, 1, true);
+    router.setRouteGainDb(0, 1, 0.0f);
+    router.setRouteEnabled(1, 0, true);
+    router.setRouteGainDb(1, 0, 0.0f);
+    router.setRouteEnabled(1, 1, true);
+    router.setRouteGainDb(1, 1, 0.0f);
+
+    juce::AudioBuffer<float> dummyIn(2, 128);
+    dummyIn.clear();
+
+    // At 0 dB fader, DM output on Monitor bus should be ~0.8f
+    chMgr.processChannels(dummyIn, 128);
+    router.routeChannelsToOutputs(chMgr, outMgr, 128);
+    outMgr.processOutputs(128);
+    float outMonDm1 = outMon->getBuffer().getMagnitude(0, 0, 128);
+    assert(outMonDm1 > 0.7f && outMonDm1 < 0.9f);
+
+    // Lower fader to -6 dB (~0.5x linear): DM MUST follow fader!
+    ch0->setFaderDb(-6.0f);
+    chMgr.processChannels(dummyIn, 128);
+    router.routeChannelsToOutputs(chMgr, outMgr, 128);
+    outMgr.processOutputs(128);
+    float outMonDm2 = outMon->getBuffer().getMagnitude(0, 0, 128);
+    assert(outMonDm2 > 0.35f && outMonDm2 < 0.45f); // Half level: follows fader!
+
+    // Add VST plugin (multiplier 2.0x): DM MUST reflect VST processing!
+    auto plug = std::make_unique<MockAudioPluginInstance>("GainX2", 2.0f, 0.0f);
+    ch0->getPluginRack().addPlugin(std::move(plug), "GainX2");
+    chMgr.processChannels(dummyIn, 128);
+    router.routeChannelsToOutputs(chMgr, outMgr, 128);
+    outMgr.processOutputs(128);
+    float outMonDmVst = outMon->getBuffer().getMagnitude(0, 0, 128);
+    assert(outMonDmVst > 0.7f && outMonDmVst < 0.9f); // Doubled by VST!
+
+    // ── 3. Test PFL bypasses fader but follows VST ──
+    // Switch ch0 to PFL (which turns DM OFF)
+    ch0->setPfl(true);
+    assert(ch0->getDirectMonitor() == false);
+
+    // Pull fader down to -60 dB (silence in mix): PFL MUST still be heard (bypasses fader)!
+    ch0->setFaderDb(-60.0f);
+    chMgr.processChannels(dummyIn, 128);
+    router.routeChannelsToOutputs(chMgr, outMgr, 128);
+    outMgr.processOutputs(128);
+
+    // Program bus (outMain) is silent for ch0 because fader is -60 dB (only ch1 at ~0.3f present)
+    float outMainMag = outMain->getBuffer().getMagnitude(0, 0, 128);
+    assert(outMainMag > 0.2f && outMainMag < 0.4f);
+
+    // Monitor bus (outMon) hears ch0 via PFL tap (post-VST with 2.0x gain = ~1.6f)!
+    float outMonPfl = outMon->getBuffer().getMagnitude(0, 0, 128);
+    assert(outMonPfl > 1.4f); // PFL is unaffected by -60 dB fader!
+
+    // Move fader to +6 dB: PFL level on monitor output must NOT change!
+    ch0->setFaderDb(6.0f);
+    chMgr.processChannels(dummyIn, 128);
+    router.routeChannelsToOutputs(chMgr, outMgr, 128);
+    outMgr.processOutputs(128);
+    float outMonPfl2 = outMon->getBuffer().getMagnitude(0, 0, 128);
+    assert(std::abs(outMonPfl2 - outMonPfl) < 0.05f); // PFL level invariant to fader!
+
+    // ── 4. Test Dynamic Monitor Output Selection ──
+    // Change monitor designation: outMain becomes monitor, outMon becomes non-monitor
+    outMain->setMonitor(true);
+    outMon->setMonitor(false);
+
+    chMgr.processChannels(dummyIn, 128);
+    router.routeChannelsToOutputs(chMgr, outMgr, 128);
+    outMgr.processOutputs(128);
+
+    // Now outMain receives the PFL feed (>1.4f)!
+    float newMonMag = outMain->getBuffer().getMagnitude(0, 0, 128);
+    assert(newMonMag > 1.4f);
+
+    // And outMon receives the normal program mix (only ch1 at ~0.3f)!
+    float newProgMag = outMon->getBuffer().getMagnitude(0, 0, 128);
+    assert(newProgMag > 0.2f && newProgMag < 0.4f);
+
+    std::cout << "[PASS] Direct Monitor (DM), PFL, and Mutual Exclusion routing tests passed." << std::endl;
+}
+
+void testPhaseAndMono()
+{
+    std::cout << "[TEST] Running Phase Invert and Force Mono tests..." << std::endl;
+
+    dsd::AudioChannel ch(0, "CH 01");
+    ch.prepare(48000.0, 128);
+
+    // Setup stereo input buffer: Left = 0.6f, Right = 0.2f
+    class StereoTestSource : public dsd::AudioInputSource
+    {
+    public:
+        void prepare(double, int) override {}
+        void releaseResources() override {}
+        void readBlock(juce::AudioBuffer<float>& buffer, const juce::AudioBuffer<float>&, int numSamples) override
+        {
+            for (int i = 0; i < numSamples; ++i)
+            {
+                buffer.setSample(0, i, 0.6f);
+                buffer.setSample(1, i, 0.2f);
+            }
+        }
+    };
+
+    ch.setInputSource(std::make_unique<StereoTestSource>());
+    ch.setGainDb(0.0f);
+    ch.setFaderDb(0.0f);
+
+    juce::AudioBuffer<float> devIn(2, 128);
+    devIn.clear();
+
+    // 1. Force Mono test: (0.6 + 0.2) * 0.5 = 0.4
+    ch.setForceMono(true);
+    ch.processBlock(devIn, 128);
+
+    auto& bufMono = ch.getOutputBuffer();
+    for (int i = 0; i < 128; ++i)
+    {
+        assert(std::abs(bufMono.getSample(0, i) - 0.4f) < 0.001f);
+        assert(std::abs(bufMono.getSample(1, i) - 0.4f) < 0.001f);
+    }
+
+    // 2. Phase Invert test: -0.4f
+    ch.setPhaseInvert(true);
+    ch.processBlock(devIn, 128);
+
+    auto& bufPhase = ch.getOutputBuffer();
+    for (int i = 0; i < 128; ++i)
+    {
+        assert(std::abs(bufPhase.getSample(0, i) - (-0.4f)) < 0.001f);
+        assert(std::abs(bufPhase.getSample(1, i) - (-0.4f)) < 0.001f);
+    }
+
+    std::cout << "[PASS] Phase Invert and Force Mono tests passed." << std::endl;
+}
+
 int main()
 {
     std::cout << "=================================================" << std::endl;
@@ -587,6 +1219,14 @@ int main()
     testLowLatencyCaptureFifo();
     testWindowAudioCapture();
     testSessionSaveLoad();
+    testVstBypassAndReorder();
+    testPreGainMetering();
+    testGainAndFaderControls();
+    testOnOffVsMuteSemantics();
+    testHpfDsp();
+    testPadDsp();
+    testDirectMonitorAndPflRouting();
+    testPhaseAndMono();
 
     std::cout << "=================================================" << std::endl;
     std::cout << " All Level 1 Engine Tests Successfully Passed!   " << std::endl;

@@ -14,7 +14,7 @@ namespace dsd
         {
             if (auto* ch = channelManagerRef.getChannel(i))
             {
-                juce::String name = juce::String::formatted("CH %02d: %s", i + 1, ch->getName().c_str());
+                juce::String name = juce::String::formatted("CH %02d: ", i + 1) + juce::String(ch->getName());
                 channelSelector.addItem(name, i + 1);
             }
         }
@@ -27,8 +27,10 @@ namespace dsd
         {
             bool current = schedulerRef.isParallelEnabled();
             schedulerRef.setParallelEnabled(!current);
+            dspModeBtn.setToggleState(!current, juce::dontSendNotification);
             dspModeBtn.setButtonText(!current ? "DSP: MULTICORE PARALLEL" : "DSP: SINGLE-THREAD (Safe)");
         };
+        dspModeBtn.setToggleState(schedulerRef.isParallelEnabled(), juce::dontSendNotification);
         dspModeBtn.setButtonText(schedulerRef.isParallelEnabled() ? "DSP: MULTICORE PARALLEL" : "DSP: SINGLE-THREAD (Safe)");
         addAndMakeVisible(dspModeBtn);
 

@@ -3,6 +3,8 @@
 
 namespace dsd
 {
+    std::atomic<PluginInstanceID> PluginRack::nextUniqueId{1};
+
     PluginRack::PluginRack()
     {
     }
@@ -15,11 +17,11 @@ namespace dsd
     void PluginRack::prepare(double sampleRate, int maxBlockSize)
     {
         std::lock_guard<std::mutex> lock(rackMutex);
-        currentSampleRate = sampleRate;
-        currentBlockSize = maxBlockSize;
+        currentSampleRate = (sampleRate > 0.0) ? sampleRate : 48000.0;
+        currentBlockSize = (maxBlockSize > 0) ? maxBlockSize : 128;
 
         // Pre-allocate scratch buffer (up to 8 channels for stereo + sidechains / surround)
-        scratchBuffer.setSize(8, std::max(128, maxBlockSize), false, true, true);
+        scratchBuffer.setSize(8, std::max(128, currentBlockSize), false, true, true);
 
         for (auto& slot : slots)
         {
@@ -27,8 +29,8 @@ namespace dsd
             {
                 try
                 {
-                    slot->instance->setPlayConfigDetails(2, 2, sampleRate, maxBlockSize);
-                    slot->instance->prepareToPlay(sampleRate, maxBlockSize);
+                    slot->instance->setPlayConfigDetails(2, 2, currentSampleRate, currentBlockSize);
+                    slot->instance->prepareToPlay(currentSampleRate, currentBlockSize);
                     slot->latencySamples.store(std::max(0, slot->instance->getLatencySamples()), std::memory_order_relaxed);
                 }
                 catch (...)
@@ -44,13 +46,18 @@ namespace dsd
         std::lock_guard<std::mutex> lock(rackMutex);
         for (auto& slot : slots)
         {
-            if (slot != nullptr && slot->instance != nullptr)
+            if (slot != nullptr)
             {
-                try
+                if (slot->activeEditorWindow != nullptr)
                 {
-                    slot->instance->releaseResources();
+                    slot->activeEditorWindow->setVisible(false);
+                    delete slot->activeEditorWindow.getComponent();
                 }
-                catch (...) {}
+
+                if (slot->instance != nullptr)
+                {
+                    try { slot->instance->releaseResources(); } catch (...) {}
+                }
             }
         }
         scratchBuffer.setSize(0, 0);
@@ -58,23 +65,24 @@ namespace dsd
 
     void PluginRack::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midiMessages*/, int numSamples)
     {
-        // If numSamples not specified, use buffer sample count
         const int actualSamples = (numSamples > 0) ? numSamples : buffer.getNumSamples();
         if (actualSamples <= 0)
             return;
 
-        // Use try_lock to avoid blocking real-time audio thread if UI is modifying the rack
+        // Non-blocking try_lock avoids real-time audio thread starvation during UI mutations
         std::unique_lock<std::mutex> lock(rackMutex, std::try_to_lock);
         if (!lock.owns_lock())
-            return; // Skip plugin processing safely for this single block if locked
+            return;
 
         const int bufferChannels = buffer.getNumChannels();
 
+        // Process sequentially in strict visual/chain order
         for (auto& slot : slots)
         {
             if (slot == nullptr || slot->instance == nullptr)
                 continue;
 
+            // Independent per-plugin bypass check
             if (slot->bypassed.load(std::memory_order_relaxed))
                 continue;
 
@@ -83,14 +91,12 @@ namespace dsd
             const int totalOuts = plugin->getTotalNumOutputChannels();
             const int neededChannels = std::max({ bufferChannels, totalIns, totalOuts });
 
-            // Isolated MIDI buffer per plugin slot to prevent MIDI corruption cascades
             juce::MidiBuffer slotMidi;
 
             try
             {
                 if (neededChannels > bufferChannels)
                 {
-                    // Plugin requires extra channels (e.g. 4 channels for sidechain or surround)
                     const int allocChans = std::max(8, neededChannels);
                     const int allocSamples = std::max(currentBlockSize, actualSamples);
                     if (scratchBuffer.getNumChannels() < allocChans || scratchBuffer.getNumSamples() < allocSamples)
@@ -98,29 +104,25 @@ namespace dsd
                         scratchBuffer.setSize(allocChans, allocSamples, false, true, true);
                     }
 
-                    // Copy input channels to scratch buffer
                     for (int ch = 0; ch < bufferChannels; ++ch)
                         scratchBuffer.copyFrom(ch, 0, buffer.getReadPointer(ch), actualSamples);
 
-                    // Clear extra channels (sidechain / aux)
                     for (int ch = bufferChannels; ch < neededChannels; ++ch)
                         scratchBuffer.clear(ch, 0, actualSamples);
 
                     juce::AudioBuffer<float> procBuf(scratchBuffer.getArrayOfWritePointers(), neededChannels, actualSamples);
                     plugin->processBlock(procBuf, slotMidi);
 
-                    // Copy processed stereo output back
                     for (int ch = 0; ch < bufferChannels; ++ch)
                         buffer.copyFrom(ch, 0, procBuf.getReadPointer(ch), actualSamples);
                 }
                 else
                 {
-                    // Direct in-place processing with exact actualSamples proxy
                     juce::AudioBuffer<float> procBuf(buffer.getArrayOfWritePointers(), bufferChannels, actualSamples);
                     plugin->processBlock(procBuf, slotMidi);
                 }
 
-                // Sanitize audio buffer to prevent NaN / Inf propagation between chained plugins
+                // Sanitize buffer against NaN / Inf propagation
                 for (int ch = 0; ch < bufferChannels; ++ch)
                 {
                     float* channelData = buffer.getWritePointer(ch);
@@ -133,7 +135,7 @@ namespace dsd
             }
             catch (...)
             {
-                // Silently bypass crashing plugin to maintain console audio stability
+                // Silently bypass ONLY this single failing plugin to preserve entire mixer stability
                 slot->bypassed.store(true, std::memory_order_relaxed);
             }
         }
@@ -161,12 +163,46 @@ namespace dsd
         return nullptr;
     }
 
-    bool PluginRack::addPlugin(std::unique_ptr<juce::AudioPluginInstance> pluginInstance, const juce::String& name)
+    const PluginSlot* PluginRack::getSlotById(PluginInstanceID id) const
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        for (const auto& slot : slots)
+        {
+            if (slot != nullptr && slot->instanceId == id)
+                return slot.get();
+        }
+        return nullptr;
+    }
+
+    PluginSlot* PluginRack::getSlotById(PluginInstanceID id)
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        for (auto& slot : slots)
+        {
+            if (slot != nullptr && slot->instanceId == id)
+                return slot.get();
+        }
+        return nullptr;
+    }
+
+    int PluginRack::findSlotIndex(PluginInstanceID id) const
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        for (int i = 0; i < static_cast<int>(slots.size()); ++i)
+        {
+            if (slots[i] != nullptr && slots[i]->instanceId == id)
+                return i;
+        }
+        return -1;
+    }
+
+    PluginInstanceID PluginRack::addPlugin(std::unique_ptr<juce::AudioPluginInstance> pluginInstance,
+                                          const juce::String& name,
+                                          PluginInstanceID specificId)
     {
         if (pluginInstance == nullptr)
-            return false;
+            return 0;
 
-        // 1. Configure buses for Stereo In / Stereo Out, disabling non-main buses (sidechain/aux)
         pluginInstance->setPlayConfigDetails(2, 2, currentSampleRate, currentBlockSize);
 
         try
@@ -175,18 +211,23 @@ namespace dsd
         }
         catch (...)
         {
-            return false;
+            return 0;
         }
 
         std::lock_guard<std::mutex> lock(rackMutex);
 
         auto slot = std::make_unique<PluginSlot>();
+        slot->instanceId = (specificId > 0) ? specificId : nextUniqueId.fetch_add(1);
+        if (specificId >= nextUniqueId.load())
+            nextUniqueId.store(specificId + 1);
+
         slot->name = name.isNotEmpty() ? name : pluginInstance->getName();
         slot->latencySamples.store(std::max(0, pluginInstance->getLatencySamples()), std::memory_order_relaxed);
         slot->instance = std::move(pluginInstance);
 
+        const PluginInstanceID assignedId = slot->instanceId;
         slots.push_back(std::move(slot));
-        return true;
+        return assignedId;
     }
 
     bool PluginRack::removePlugin(int index)
@@ -198,6 +239,39 @@ namespace dsd
             {
                 slotToDelete = std::move(slots[index]);
                 slots.erase(slots.begin() + index);
+            }
+        }
+
+        if (slotToDelete != nullptr)
+        {
+            if (slotToDelete->activeEditorWindow != nullptr)
+            {
+                slotToDelete->activeEditorWindow->setVisible(false);
+                delete slotToDelete->activeEditorWindow.getComponent();
+            }
+
+            if (slotToDelete->instance != nullptr)
+            {
+                try { slotToDelete->instance->releaseResources(); } catch (...) {}
+            }
+            return true;
+        }
+        return false;
+    }
+
+    bool PluginRack::removePluginById(PluginInstanceID id)
+    {
+        std::unique_ptr<PluginSlot> slotToDelete;
+        {
+            std::lock_guard<std::mutex> lock(rackMutex);
+            for (auto it = slots.begin(); it != slots.end(); ++it)
+            {
+                if (*it != nullptr && (*it)->instanceId == id)
+                {
+                    slotToDelete = std::move(*it);
+                    slots.erase(it);
+                    break;
+                }
             }
         }
 
@@ -256,21 +330,82 @@ namespace dsd
         }
     }
 
+    bool PluginRack::movePluginById(PluginInstanceID id, int targetIndex)
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        const int count = static_cast<int>(slots.size());
+        if (targetIndex < 0 || targetIndex >= count)
+            return false;
+
+        int fromIndex = -1;
+        for (int i = 0; i < count; ++i)
+        {
+            if (slots[i] != nullptr && slots[i]->instanceId == id)
+            {
+                fromIndex = i;
+                break;
+            }
+        }
+
+        if (fromIndex >= 0 && fromIndex != targetIndex)
+        {
+            auto item = std::move(slots[fromIndex]);
+            slots.erase(slots.begin() + fromIndex);
+            slots.insert(slots.begin() + targetIndex, std::move(item));
+            return true;
+        }
+        return false;
+    }
+
     void PluginRack::setBypass(int index, bool bypassed)
     {
         std::lock_guard<std::mutex> lock(rackMutex);
-        if (index >= 0 && index < static_cast<int>(slots.size()))
+        if (index >= 0 && index < static_cast<int>(slots.size()) && slots[index] != nullptr)
         {
-            slots[index]->bypassed.store(bypassed, std::memory_order_relaxed);
+            slots[index]->bypassed.store(bypassed, std::memory_order_release);
+            if (slots[index]->instance != nullptr)
+            {
+                if (auto* bp = slots[index]->instance->getBypassParameter())
+                    bp->setValueNotifyingHost(bypassed ? 1.0f : 0.0f);
+            }
+        }
+    }
+
+    void PluginRack::setBypassById(PluginInstanceID id, bool bypassed)
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        for (auto& slot : slots)
+        {
+            if (slot != nullptr && slot->instanceId == id)
+            {
+                slot->bypassed.store(bypassed, std::memory_order_release);
+                if (slot->instance != nullptr)
+                {
+                    if (auto* bp = slot->instance->getBypassParameter())
+                        bp->setValueNotifyingHost(bypassed ? 1.0f : 0.0f);
+                }
+                break;
+            }
         }
     }
 
     bool PluginRack::isBypassed(int index) const
     {
         std::lock_guard<std::mutex> lock(rackMutex);
-        if (index >= 0 && index < static_cast<int>(slots.size()))
+        if (index >= 0 && index < static_cast<int>(slots.size()) && slots[index] != nullptr)
         {
             return slots[index]->bypassed.load(std::memory_order_relaxed);
+        }
+        return false;
+    }
+
+    bool PluginRack::isBypassedById(PluginInstanceID id) const
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        for (const auto& slot : slots)
+        {
+            if (slot != nullptr && slot->instanceId == id)
+                return slot->bypassed.load(std::memory_order_relaxed);
         }
         return false;
     }
@@ -278,7 +413,6 @@ namespace dsd
     int PluginRack::getTotalLatencySamples() const noexcept
     {
         int total = 0;
-        // Non-locking atomic read
         for (const auto& slot : slots)
         {
             if (slot != nullptr && !slot->bypassed.load(std::memory_order_relaxed))
@@ -289,18 +423,28 @@ namespace dsd
         return total;
     }
 
+    int PluginRack::getPluginLatencySamples(PluginInstanceID id) const noexcept
+    {
+        for (const auto& slot : slots)
+        {
+            if (slot != nullptr && slot->instanceId == id)
+                return slot->latencySamples.load(std::memory_order_relaxed);
+        }
+        return 0;
+    }
+
     class PluginEditorWindow : public juce::DocumentWindow
     {
     public:
         PluginEditorWindow(const juce::String& title, juce::AudioProcessorEditor* editor)
-            : DocumentWindow(title, juce::Colour(0xff22252a), DocumentWindow::closeButton, true)
+            : DocumentWindow(title, juce::Colour(0xff181a1f), DocumentWindow::closeButton, true)
         {
             setUsingNativeTitleBar(true);
             setContentOwned(editor, true);
             setResizable(editor->isResizable(), false);
 
-            const int w = std::max(200, editor->getWidth());
-            const int h = std::max(150, editor->getHeight());
+            const int w = std::max(240, editor->getWidth());
+            const int h = std::max(180, editor->getHeight());
             centreWithSize(w, h);
             toFront(true);
             setVisible(true);
@@ -319,22 +463,53 @@ namespace dsd
         if (index < 0 || index >= static_cast<int>(slots.size()) || slots[index] == nullptr)
             return;
 
-        auto* slot = slots[index].get();
-        if (slot->instance == nullptr)
+        openPluginEditorById(slots[index]->instanceId);
+    }
+
+    void PluginRack::openPluginEditorById(PluginInstanceID id)
+    {
+        PluginSlot* targetSlot = nullptr;
+        for (auto& slot : slots)
+        {
+            if (slot != nullptr && slot->instanceId == id)
+            {
+                targetSlot = slot.get();
+                break;
+            }
+        }
+
+        if (targetSlot == nullptr || targetSlot->instance == nullptr)
             return;
 
-        if (slot->activeEditorWindow != nullptr)
+        if (targetSlot->activeEditorWindow != nullptr)
         {
-            slot->activeEditorWindow->toFront(true);
-            slot->activeEditorWindow->grabKeyboardFocus();
+            targetSlot->activeEditorWindow->toFront(true);
+            targetSlot->activeEditorWindow->grabKeyboardFocus();
             return;
         }
 
-        auto* editor = slot->instance->createEditorIfNeeded();
+        auto* editor = targetSlot->instance->createEditorIfNeeded();
         if (editor != nullptr)
         {
-            auto* window = new PluginEditorWindow(slot->name, editor);
-            slot->activeEditorWindow = window;
+            auto* window = new PluginEditorWindow(targetSlot->name, editor);
+            targetSlot->activeEditorWindow = window;
+        }
+    }
+
+    void PluginRack::closePluginEditorById(PluginInstanceID id)
+    {
+        std::lock_guard<std::mutex> lock(rackMutex);
+        for (auto& slot : slots)
+        {
+            if (slot != nullptr && slot->instanceId == id)
+            {
+                if (slot->activeEditorWindow != nullptr)
+                {
+                    slot->activeEditorWindow->setVisible(false);
+                    delete slot->activeEditorWindow.getComponent();
+                }
+                break;
+            }
         }
     }
 } // namespace dsd

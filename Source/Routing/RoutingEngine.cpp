@@ -102,51 +102,104 @@ namespace dsd
         }
 
         const bool anySolo = channelManager.hasAnySoloChannel();
+        const bool anyPfl = channelManager.hasAnyPflChannel();
+        const bool anyDirectMonitor = channelManager.hasAnyDirectMonitorChannel();
         const int numChannels = channelManager.getNumChannels();
 
-        // 2. Sum each channel to enabled outputs
+        // 2. Sum channels to appropriate outputs
         for (int chIdx = 0; chIdx < numChannels; ++chIdx)
         {
             const auto* ch = channelManager.getChannel(chIdx);
             if (ch == nullptr)
                 continue;
 
-            // Global channel disable output check
-            if (ch->getDisableOutput())
-                continue;
-
-            // Solo filtering: if any channel is soloed, exclude non-solo channels
-            if (anySolo && !ch->getSolo())
-                continue;
-
-            const auto& chBuf = ch->getOutputBuffer();
-            const float* chReadL = chBuf.getReadPointer(0);
-            const float* chReadR = chBuf.getReadPointer(1);
-
             for (int outIdx = 0; outIdx < numOutputs; ++outIdx)
             {
                 if (chIdx < NUM_CHANNELS_LEVEL1 && outIdx < NUM_OUTPUT_BUSES_LEVEL1)
                 {
-                    if (!matrix[chIdx][outIdx].enabled.load(std::memory_order_relaxed))
-                        continue;
-
                     auto* outBus = outputManager.getOutput(outIdx);
                     if (outBus == nullptr)
                         continue;
 
-                    const float sendGainDb = matrix[chIdx][outIdx].sendGainDb.load(std::memory_order_relaxed);
-                    const float sendLinear = GainProcessor::dbToLinear(sendGainDb);
-                    if (sendLinear <= 0.0f)
-                        continue;
+                    const bool isMonitorBus = outBus->getMonitor();
 
-                    auto& outBuf = outBus->getBuffer();
-                    float* outWriteL = outBuf.getWritePointer(0);
-                    float* outWriteR = outBuf.getWritePointer(1);
-
-                    for (int s = 0; s < numSamples; ++s)
+                    // Monitoring path:
+                    // If any channel has PFL or DM active, and this output is a designated MONITOR output:
+                    if ((anyPfl || anyDirectMonitor) && isMonitorBus)
                     {
-                        outWriteL[s] += chReadL[s] * sendLinear;
-                        outWriteR[s] += chReadR[s] * sendLinear;
+                        if (anyPfl)
+                        {
+                            // PFL mode: audition PFL-active channels using PRE-FADER / POST-VST tap
+                            if (!ch->getPfl())
+                                continue;
+
+                            const auto& pflBuf = ch->getPflBuffer();
+                            const float* srcL = pflBuf.getReadPointer(0);
+                            const float* srcR = pflBuf.getReadPointer(1);
+
+                            auto& outBuf = outBus->getBuffer();
+                            float* outWriteL = outBuf.getWritePointer(0);
+                            float* outWriteR = outBuf.getWritePointer(1);
+
+                            for (int s = 0; s < numSamples; ++s)
+                            {
+                                outWriteL[s] += srcL[s];
+                                outWriteR[s] += srcR[s];
+                            }
+                        }
+                        else
+                        {
+                            // DM mode: audition DM-active channels using POST-FADER / POST-VST tap
+                            if (!ch->getDirectMonitor())
+                                continue;
+
+                            const auto& dmBuf = ch->getDmBuffer();
+                            const float* srcL = dmBuf.getReadPointer(0);
+                            const float* srcR = dmBuf.getReadPointer(1);
+
+                            auto& outBuf = outBus->getBuffer();
+                            float* outWriteL = outBuf.getWritePointer(0);
+                            float* outWriteR = outBuf.getWritePointer(1);
+
+                            for (int s = 0; s < numSamples; ++s)
+                            {
+                                outWriteL[s] += srcL[s];
+                                outWriteR[s] += srcR[s];
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Normal Program Routing path:
+                        // Channel ON/OFF gate check (disableOutput == true excludes channel from program mix)
+                        if (ch->getDisableOutput())
+                            continue;
+
+                        // Solo filtering: if any channel is soloed, exclude non-solo channels
+                        if (anySolo && !ch->getSolo())
+                            continue;
+
+                        if (!matrix[chIdx][outIdx].enabled.load(std::memory_order_relaxed))
+                            continue;
+
+                        const float sendGainDb = matrix[chIdx][outIdx].sendGainDb.load(std::memory_order_relaxed);
+                        const float sendLinear = GainProcessor::dbToLinear(sendGainDb);
+                        if (sendLinear <= 0.0f)
+                            continue;
+
+                        const auto& chBuf = ch->getOutputBuffer();
+                        const float* chReadL = chBuf.getReadPointer(0);
+                        const float* chReadR = chBuf.getReadPointer(1);
+
+                        auto& outBuf = outBus->getBuffer();
+                        float* outWriteL = outBuf.getWritePointer(0);
+                        float* outWriteR = outBuf.getWritePointer(1);
+
+                        for (int s = 0; s < numSamples; ++s)
+                        {
+                            outWriteL[s] += chReadL[s] * sendLinear;
+                            outWriteR[s] += chReadR[s] * sendLinear;
+                        }
                     }
                 }
             }

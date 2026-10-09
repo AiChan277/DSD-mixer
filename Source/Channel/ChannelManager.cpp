@@ -79,4 +79,24 @@ namespace dsd
         }
         return false;
     }
+
+    bool ChannelManager::hasAnyDirectMonitorChannel() const noexcept
+    {
+        for (const auto& ch : channels)
+        {
+            if (ch != nullptr && ch->getDirectMonitor())
+                return true;
+        }
+        return false;
+    }
+
+    bool ChannelManager::hasAnyPflChannel() const noexcept
+    {
+        for (const auto& ch : channels)
+        {
+            if (ch != nullptr && ch->getPfl())
+                return true;
+        }
+        return false;
+    }
 } // namespace dsd

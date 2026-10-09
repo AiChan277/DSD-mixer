@@ -1011,7 +1011,7 @@ namespace dsd
         juce::String chName = chPtr ? chPtr->getName() : ("CH " + juce::String(ch + 1));
         juce::String outName = outPtr ? outPtr->getName() : ("OUT " + juce::String(out + 1));
 
-        inspectorRouteLabel.setText(juce::String::formatted("%02d  ", ch + 1) + chName + "  ➜  " + "OUT " + juce::String(out + 1) + "  " + outName.toUpperCase(),
+        inspectorRouteLabel.setText(juce::String::formatted("%02d  ", ch + 1) + chName + "  ->  OUT " + juce::String(out + 1) + "  " + outName.toUpperCase(),
                                    juce::dontSendNotification);
 
         const bool isConnected = routingEngineRef.isRouteEnabled(ch, out);

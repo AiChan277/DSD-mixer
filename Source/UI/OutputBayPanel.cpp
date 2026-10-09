@@ -55,9 +55,9 @@ namespace dsd
     void OutputBayPanel::paint(juce::Graphics& g)
     {
         auto bounds = getLocalBounds().toFloat();
-        g.setColour(juce::Colour(0xffBEC1C8));
+        g.setColour(juce::Colour(0xff1C1F26));
         g.fillRoundedRectangle(bounds, 4.0f);
-        g.setColour(DSDLookAndFeel::getConsoleBevel());
+        g.setColour(juce::Colour(0xff353A45));
         g.drawRoundedRectangle(bounds, 4.0f, 1.2f);
     }
 }

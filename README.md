@@ -6,7 +6,7 @@
 [![Build System](https://img.shields.io/badge/Build-CMake%20%2B%20Ninja%20%2B%20MSVC-brightgreen.svg)]()
 [![Type](https://img.shields.io/badge/Release-Single%20Portable%20Binary%20%28~4.8MB%29-purple.svg)]()
 
-**DSD Mixer** is a software-defined, real-time digital audio mixing console for Windows x64. Level 1 provides **16 input channels and 4 independent output buses**, with per-channel DSP, native VST3 processing, application audio capture, configurable patch-based routing, and an adaptive multi-core processing engine.
+**DSD Mixer** is a software-defined, real-time digital audio mixing console for Windows x64. Level 1 provides **16 input channels and 4 independent output buses**, with per-channel DSP, native VST3 processing, application audio capture, configurable patch-based routing, an adaptive multi-core processing engine, a built-in **DSDCP v1 WebSocket remote control server**, and **Windows system tray background operation**.
 
 DSD Mixer is designed for workflows such as **live streaming, podcasting, broadcast production, software audio routing, live monitoring, and general-purpose real-time audio control**. It is deliberately designed as a mixer and routing system rather than a digital audio workstation (DAW): the signal path is continuous, deterministic, and centred on real-time processing and routing rather than timeline-based production.
 
@@ -363,6 +363,29 @@ This makes it possible to maintain separate configurations for activities such a
 
 ---
 
+### 10. DSDCP v1 Remote Control Surface & Pairing
+
+DSD Mixer includes an embedded **DSDCP v1 (DSD Control Protocol)** WebSocket server designed for low-latency touch control surfaces (such as the Samsung Galaxy A9 and web/tablet clients) over local Wi-Fi/LAN or USB/ADB port forwarding.
+
+The remote control subsystem provides:
+
+- **Automatic Server Startup** — starts automatically with DSD Mixer using the configured port (default `9001`) and persisted preferences
+- **Bidirectional Real-Time Synchronisation** — two-way state sync for channel faders, input gain, pan, mute, ON/OFF, PFL, Direct Monitor, polarity, mono, HPF, PAD, output buses, and 16 × 4 routing crosspoints
+- **PIN Pairing & Authentication** — 6-digit security PIN validation with instant PIN regeneration or custom PIN assignment from the desktop `REMOTE` dialog
+- **Real-Time Meter Streaming with Backpressure Protection** — configurable meter broadcast intervals with per-client socket buffer monitoring that automatically drops stale meter frames on slow connections while preserving control command responsiveness
+
+---
+
+### 11. Windows System Tray & Background Operation
+
+Because DSD Mixer operates as a continuous real-time audio routing and mixing engine, it supports full **Windows System Tray** operation so the desktop window can be closed without interrupting audio processing or remote control sessions.
+
+- **Minimize to Tray on Close** — closing the main window hides the GUI to the Windows notification area while the audio engine, WASAPI capture streams, VST3 chains, and DSDCP remote server continue running in the background with zero hidden-window UI timer overhead
+- **System Tray Context Menu** — right-clicking the tray icon provides quick controls to open/hide the mixer window, view live remote server status and connected client count, start/stop the remote server, toggle the *Minimize to Tray on Close* preference, or cleanly exit the application
+- **Persistent Application Settings** — preferences (such as tray close behaviour, remote server auto-start, port, and pairing PIN) are automatically persisted in `%APPDATA%\DSDMixer\DSDMixer.settings`
+
+---
+
 ## Signal Flow
 
 The Level 1 architecture can be represented as follows:
@@ -509,6 +532,12 @@ OUT 4 — RECORDING
 
 The labels are semantic and do not lock the engine into a predefined output role.
 
+### 6. Remote Control & Background Operation
+
+1. Open **`REMOTE`** from the top bar to view the available LAN WebSocket endpoints (`ws://<LAN-IP>:<PORT>`) and the 6-digit pairing PIN.
+2. Connect from the touch/browser remote client on the same network (or via USB/ADB) and enter the pairing PIN.
+3. Closing the main window minimizes DSD Mixer to the **Windows System Tray** by default, keeping the audio engine and remote control server running continuously in the background. Right-click the tray icon at any time to restore the window or exit the application.
+
 ---
 
 ## Build from Source
@@ -547,11 +576,12 @@ cmake --build build --config Release -j 4
 
 ### Run Automated Tests
 
-The project includes automated tests for core audio-engine and routing behaviour.
+The project includes automated test suites for core audio-engine/routing behaviour and the DSDCP v1 remote control protocol:
 
 ```powershell
-cmake --build build --target AudioEngineTests --config Release
-.\build\AudioEngineTests_artefacts\Release\AudioEngineTests.exe
+cmake --build build --target AudioEngineTests ControlProtocolTests --config Release
+.\build\AudioEngineTests.exe
+.\build\ControlProtocolTests.exe
 ```
 
 ---

@@ -4,12 +4,17 @@
 #include "Audio/AudioDeviceManager.h"
 #include "Audio/AudioEngine.h"
 
+namespace dsd::control
+{
+    class ControlServer;
+}
+
 namespace dsd
 {
     class TopBar : public juce::Component
     {
     public:
-        TopBar(AudioDeviceManager& devManager, AudioEngine& audioEngine);
+        TopBar(AudioDeviceManager& devManager, AudioEngine& audioEngine, control::ControlServer* controlServer = nullptr);
         ~TopBar() override = default;
 
         std::function<void()> onSessionLoaded;
@@ -22,6 +27,7 @@ namespace dsd
     private:
         AudioDeviceManager& deviceManagerRef;
         AudioEngine& audioEngineRef;
+        control::ControlServer* controlServerRef{nullptr};
 
         juce::Label titleLabel;
 
@@ -29,6 +35,7 @@ namespace dsd
         juce::TextButton matrixBtn{"ROUTING MATRIX"};
         juce::TextButton perfBtn{"PERF MONITOR"};
         juce::TextButton stageInspectorBtn{"STAGE METERS"};
+        juce::TextButton remoteBtn{"REMOTE"};
         juce::TextButton saveSessionBtn{"SAVE .DSD"};
         juce::TextButton loadSessionBtn{"LOAD .DSD"};
 
@@ -37,10 +44,14 @@ namespace dsd
         juce::Label engineStatusBadge;
         juce::Label cpuLoadLabel;
 
+        juce::Rectangle<float> statusPodBounds;
+        float sessionDividerX{0.0f};
+
         void openAudioSettingsDialog();
         void openRoutingMatrixDialog();
         void openPerformanceDialog();
         void openStageInspectorDialog();
+        void openControlServerDialog();
         void onSaveSessionClicked();
         void onLoadSessionClicked();
     };

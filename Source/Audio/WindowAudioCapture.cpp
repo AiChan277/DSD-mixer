@@ -949,6 +949,18 @@ namespace dsd
 
     std::vector<RunningAppInfo> WindowAudioCapture::getRunningApplications()
     {
+        static std::mutex cacheMutex;
+        static std::vector<RunningAppInfo> cachedApps;
+        static juce::uint32 lastFetchTimeMs = 0;
+
+        const juce::uint32 now = juce::Time::getMillisecondCounter();
+        std::lock_guard<std::mutex> lock(cacheMutex);
+
+        if (!cachedApps.empty() && (now - lastFetchTimeMs < 2000))
+        {
+            return cachedApps;
+        }
+
         WindowEnumData data;
 
         // 1. WASAPI Active Audio Sessions Enumerator
@@ -1024,6 +1036,8 @@ namespace dsd
         // 2. Desktop Window Enumeration (finds all open applications and enriches window titles)
         EnumWindows(EnumWindowsCallback, reinterpret_cast<LPARAM>(&data));
 
+        cachedApps = data.apps;
+        lastFetchTimeMs = now;
         return data.apps;
     }
 } // namespace dsd

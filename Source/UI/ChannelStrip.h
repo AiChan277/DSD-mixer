@@ -5,6 +5,8 @@
 #include "Audio/WindowAudioCapture.h"
 #include "UI/MeterComponent.h"
 #include "UI/FaderComponent.h"
+#include "UI/DSDKnob.h"
+#include "UI/DSDConsoleButton.h"
 
 namespace dsd
 {
@@ -30,29 +32,46 @@ namespace dsd
         void updateUIFromChannel();
         void resized() override;
         void paint(juce::Graphics& g) override;
+
     private:
-        AudioChannel& channelRef;
+        AudioChannel&             channelRef;
         juce::AudioDeviceManager& devMgrRef;
-        DynamicComboBox inputDeviceSelector;
-        // OLED Screen Card components
-        juce::Label chNumberBadge;
-        juce::Label gainReadout;
-        juce::Label channelNameLabel;
-        MeterComponent topMeter;
-        juce::Label dbfsReadout;
+        DynamicComboBox           inputDeviceSelector;
 
-        // Sub-function utility buttons (compact row)
-        juce::TextButton vstRackBtn{"VST"};
-        juce::TextButton directMonitorBtn{"DM"};
-        juce::TextButton phaseInvertBtn{"PH"};
-        juce::TextButton monoBtn{"MONO"};
+        // ── OLED display area ──────────────────────────────────
+        juce::Rectangle<float>    oledBounds;
+        juce::Label               chNumberBadge;
+        juce::Label               faderReadout;       // fader dB value (top-right of OLED)
+        juce::Label               channelNameLabel;   // editable channel name
+        MeterComponent            topMeter;          // PRE-GAIN meter (Stage A) - horizontal segmented
+        juce::Label               preGainDbfsReadout; // PRE-GAIN numeric dBFS
 
-        // Hardware Broadcast Fader
-        FaderComponent fader;
+        // ── GAIN knob ──────────────────────────────────────────
+        DSDKnob                   gainKnob         { "GAIN", KnobStyle::GainKnob, MIN_GAIN_DB, MAX_GAIN_DB, 0.0 };
 
-        // Large Broadcast Bottom Buttons (DHD RX2/SX2 Console)
-        juce::TextButton onBtn{"ON"};
-        juce::TextButton muteBtn{"OFF"};
+        // ── PAN knob ───────────────────────────────────────────
+        DSDKnob                   panKnob          { "PAN",  KnobStyle::PanKnob,  -1.0, 1.0, 0.0 };
+
+        // ── VST / DM (right column, next to PAN) ──────────────
+        DSDConsoleButton          vstRackBtn       { "VST", ConsoleButtonStyle::RectangularVst, ButtonLabelPlacement::None };
+        DSDConsoleButton          directMonitorBtn { "DM",  ConsoleButtonStyle::RectangularDm,  ButtonLabelPlacement::None };
+
+        // ── Button matrix row 1 ───────────────────────────────
+        DSDConsoleButton          muteBtn          { "MUTE", ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Below };
+        DSDConsoleButton          phaseInvertBtn   { "PH",   ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Below };
+        DSDConsoleButton          monoBtn          { "MONO", ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Below };
+
+        // ── Button matrix row 2 ───────────────────────────────
+        DSDConsoleButton          pflBtn           { "PFL",  ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Below };
+        DSDConsoleButton          hpfBtn           { "HPF",  ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Below };
+        DSDConsoleButton          padBtn           { "PAD",  ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Below };
+
+        // ── Hardware fader ─────────────────────────────────────
+        FaderComponent            fader;
+
+        // ── Bottom ON / OFF ────────────────────────────────────
+        DSDConsoleButton          onBtn            { "ON",  ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Above };
+        DSDConsoleButton          offBtn           { "OFF", ConsoleButtonStyle::SquareAsset, ButtonLabelPlacement::Above };
 
         std::vector<RunningAppInfo> runningApps;
 
@@ -62,4 +81,4 @@ namespace dsd
 
         juce::Component::SafePointer<juce::DocumentWindow> activeRackWindow;
     };
-}
+} // namespace dsd

@@ -57,7 +57,7 @@ namespace dsd
         // ====================================================================
         schedulerSectionLabel.setText("ADAPTIVE MULTICORE DSP SCHEDULER: 4 / 8 ACTIVE", juce::dontSendNotification);
         schedulerSectionLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
-        schedulerSectionLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentAmber());
+        schedulerSectionLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentBlue());
         addAndMakeVisible(schedulerSectionLabel);
 
         schedulerPolicyLabel.setText("Policy: Fast Attack (>=4 blocks >60%), Slow Decay (>=300 blocks <30%)", juce::dontSendNotification);
@@ -96,7 +96,7 @@ namespace dsd
         // ====================================================================
         captureSectionLabel.setText("SIGNAL PATH & LATENCY DIAGNOSTICS", juce::dontSendNotification);
         captureSectionLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
-        captureSectionLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentAmber());
+        captureSectionLabel.setColour(juce::Label::textColourId, juce::Colour(0xff9A3412));
         addAndMakeVisible(captureSectionLabel);
 
         latencyProfileLabel.setText("Capture Cushion Profile:", juce::dontSendNotification);
@@ -142,6 +142,7 @@ namespace dsd
         totalLatencyLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentGreen());
         addAndMakeVisible(totalLatencyLabel);
 
+        timerCallback();
         startTimerHz(30);
         setSize(640, 700);
     }
@@ -264,18 +265,7 @@ namespace dsd
         const auto activeMode = audioEngineRef.getCaptureLatencyMode();
         auto updateBtnStyle = [activeMode](juce::TextButton& btn, CaptureLatencyMode mode)
         {
-            if (activeMode == mode)
-            {
-                btn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getAccentAmber());
-                btn.setColour(juce::TextButton::textColourOnId, DSDLookAndFeel::getConsoleDarkBg());
-                btn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getConsoleDarkBg());
-            }
-            else
-            {
-                btn.setColour(juce::TextButton::buttonColourId, DSDLookAndFeel::getConsoleBevel());
-                btn.setColour(juce::TextButton::textColourOnId, DSDLookAndFeel::getTextPrimary());
-                btn.setColour(juce::TextButton::textColourOffId, DSDLookAndFeel::getTextSecondary());
-            }
+            btn.setToggleState(activeMode == mode, juce::dontSendNotification);
         };
 
         updateBtnStyle(ultraLowLatencyBtn, CaptureLatencyMode::UltraLow);
@@ -290,11 +280,12 @@ namespace dsd
         if (!diags.empty())
         {
             const auto& d = diags.front();
-            sourceInfoLabel.setText(juce::String::formatted("Capture Path: Windows Process Loopback (%s, PID: %u) | %.0f Hz, %s %d-bit %s",
-                                                           d.appName.toRawUTF8(), d.processId, d.captureSampleRate,
-                                                           d.isFloat ? "Float" : "PCM", d.bitsPerSample,
-                                                           (d.captureChannels >= 2 ? "Stereo" : "Mono")),
-                                    juce::dontSendNotification);
+            juce::String srcText = "Capture Path: Windows Process Loopback (" + d.appName
+                                 + ", PID: " + juce::String(d.processId) + ") | "
+                                 + juce::String(d.captureSampleRate, 0) + " Hz, "
+                                 + (d.isFloat ? "Float " : "PCM ") + juce::String(d.bitsPerSample) + "-bit "
+                                 + (d.captureChannels >= 2 ? "Stereo" : "Mono");
+            sourceInfoLabel.setText(srcText, juce::dontSendNotification);
 
             const double hwAgeMs = (d.hardwarePacketAgeMs > 0.1) ? d.hardwarePacketAgeMs : d.wasapiBufferMs;
 

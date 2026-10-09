@@ -2,23 +2,27 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Audio/AudioTypes.h"
+#include <functional>
 
 namespace dsd
 {
-    class MeterComponent : public juce::Component
+    class MeterComponent : public juce::Component, public juce::SettableTooltipClient
     {
     public:
-        MeterComponent(bool isStereoMode = false);
+        MeterComponent(bool isStereoMode = false, bool isHorizontalMode = true);
         ~MeterComponent() override = default;
 
         void setMeterValues(float peakL, float peakR, float peakHoldL, float peakHoldR, bool clipped);
         void setClipResetCallback(std::function<void()> callback) { onClipReset = callback; }
+
+        void setHorizontal(bool isHoriz) { isHorizontal = isHoriz; repaint(); }
 
         void paint(juce::Graphics& g) override;
         void mouseDown(const juce::MouseEvent& event) override;
 
     private:
         bool isStereo{false};
+        bool isHorizontal{true};
         float currentPeakL{0.0f};
         float currentPeakR{0.0f};
         float currentHoldL{0.0f};
@@ -28,6 +32,7 @@ namespace dsd
         std::function<void()> onClipReset;
 
         static float linearToMeterProportion(float linear) noexcept;
-        void drawSingleMeterBar(juce::Graphics& g, const juce::Rectangle<float>& bounds, float peak, float hold);
+        void drawVerticalBar(juce::Graphics& g, const juce::Rectangle<float>& bounds, float peak, float hold);
+        void drawHorizontalSegmentedBar(juce::Graphics& g, const juce::Rectangle<float>& bounds, float peak, float hold);
     };
 } // namespace dsd

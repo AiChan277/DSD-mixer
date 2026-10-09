@@ -91,19 +91,18 @@ namespace dsd
         if (botScrewY <= bounds.getBottom() - 4.0f)
             drawAllenScrew(trackCenterX, botScrewY);
 
-        // 2. Dual-sided precision tick mark scale (DHD Broadcast Console style)
+        // 2. Dual-sided precision tick mark scale (matches reference channel strip)
         const struct { float db; const char* label; } markings[] = {
-            { 10.0f, "+10" },
-            {  5.0f,  "+5" },
-            {  0.0f,   "0" },
-            { -5.0f,  "-5" },
-            {-10.0f, "-10" },
-            {-15.0f, "-15" },
-            {-20.0f, "-20" },
-            {-30.0f, "-30" },
-            {-40.0f, "-40" },
-            {-50.0f, "-50" },
-            {-60.0f, "-oo" }
+            {  12.0f, "+12" },
+            {   5.0f,  "+5" },
+            {   0.0f,   "0" },
+            {  -5.0f,  "-5" },
+            { -10.0f, "-10" },
+            { -15.0f, "-15" },
+            { -20.0f, "-20" },
+            { -30.0f, "-30" },
+            { -40.0f, "-40" },
+            { -60.0f, "-60" }
         };
 
         for (const auto& m : markings)
@@ -113,27 +112,37 @@ namespace dsd
                 continue;
 
             const bool isUnity = (std::abs(m.db) < 0.01f);
+            const bool isMinus5 = (std::abs(m.db - (-5.0f)) < 0.01f);
 
             // Left tick mark
-            const float leftTickLen = isUnity ? 7.0f : 4.0f;
-            g.setColour(isUnity ? DSDLookAndFeel::getAccentAmber() : DSDLookAndFeel::getTextPrimary().withAlpha(0.65f));
-            g.fillRect(trackCenterX - 18.0f - (isUnity ? 3.0f : 0.0f), y - 0.5f, leftTickLen, isUnity ? 1.5f : 1.0f);
+            const float leftTickLen = isUnity ? 7.0f : (isMinus5 ? 3.0f : 5.0f);
+            g.setColour(juce::Colour(0xff2A2D33));
 
-            // Right tick mark (symmetrical parallel tick)
-            const float rightTickLen = isUnity ? 7.0f : 4.0f;
-            g.fillRect(trackCenterX + 18.0f, y - 0.5f, rightTickLen, isUnity ? 1.5f : 1.0f);
-
-            // Number label (on left side, right-aligned to left tick)
-            if (isUnity)
+            if (isMinus5)
             {
-                g.setColour(DSDLookAndFeel::getAccentAmber());
-                g.setFont(juce::FontOptions(9.5f, juce::Font::bold));
+                // Subtle dotted/dash tick at -5 dB
+                g.fillRect(trackCenterX - 18.0f, y - 0.5f, 2.0f, 1.0f);
+                g.fillRect(trackCenterX - 14.0f, y - 0.5f, 2.0f, 1.0f);
             }
             else
             {
-                g.setColour(DSDLookAndFeel::getTextPrimary().withAlpha(0.75f));
-                g.setFont(juce::FontOptions(8.5f));
+                g.fillRect(trackCenterX - 18.0f - (isUnity ? 2.0f : 0.0f), y - (isUnity ? 0.7f : 0.5f), leftTickLen, isUnity ? 1.4f : 1.0f);
             }
+
+            // Right tick mark (symmetrical parallel tick)
+            if (isMinus5)
+            {
+                g.fillRect(trackCenterX + 16.0f, y - 0.5f, 2.0f, 1.0f);
+            }
+            else
+            {
+                const float rightTickLen = isUnity ? 7.0f : 5.0f;
+                g.fillRect(trackCenterX + 16.0f, y - (isUnity ? 0.7f : 0.5f), rightTickLen, isUnity ? 1.4f : 1.0f);
+            }
+
+            // Number label (on left side, right-aligned to left tick)
+            g.setColour(juce::Colour(0xff2A2D33));
+            g.setFont(juce::FontOptions(isUnity ? 8.5f : 8.0f, isUnity ? juce::Font::bold : juce::Font::plain));
 
             // Draw text right before the left tick
             g.drawText(m.label,

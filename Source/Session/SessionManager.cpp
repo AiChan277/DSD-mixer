@@ -50,6 +50,7 @@ namespace dsd
                 if (slot != nullptr && slot->instance != nullptr)
                 {
                     auto plugObj = std::make_unique<juce::DynamicObject>();
+                    plugObj->setProperty("instanceId", static_cast<juce::int64>(slot->instanceId));
                     plugObj->setProperty("name", slot->name);
                     plugObj->setProperty("bypassed", slot->bypassed.load(std::memory_order_relaxed));
 
@@ -269,6 +270,10 @@ namespace dsd
                                 if (instance == nullptr && fileOrId.isNotEmpty())
                                     instance = PluginManager::getInstance().loadPluginFromFile(juce::File(fileOrId), loadErr);
 
+                                PluginInstanceID instId = 0;
+                                if (pItem.hasProperty("instanceId"))
+                                    instId = static_cast<PluginInstanceID>(pItem["instanceId"].toString().getLargeIntValue());
+
                                 if (instance != nullptr)
                                 {
                                     if (pItem.hasProperty("state"))
@@ -279,8 +284,8 @@ namespace dsd
                                             instance->setStateInformation(mem.getData(), static_cast<int>(mem.getSize()));
                                         }
                                     }
-                                    rack.addPlugin(std::move(instance), plugName);
-                                    rack.setBypass(rack.getNumPlugins() - 1, bypassed);
+                                    const PluginInstanceID assignedId = rack.addPlugin(std::move(instance), plugName, instId);
+                                    rack.setBypassById(assignedId, bypassed);
                                 }
                             }
                         }

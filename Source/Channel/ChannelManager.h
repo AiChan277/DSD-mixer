@@ -25,6 +25,8 @@ namespace dsd
         const AudioChannel* getChannel(int index) const noexcept;
 
         bool hasAnySoloChannel() const noexcept;
+        bool hasAnyDirectMonitorChannel() const noexcept;
+        bool hasAnyPflChannel() const noexcept;
 
     private:
         std::vector<std::unique_ptr<AudioChannel>> channels;
