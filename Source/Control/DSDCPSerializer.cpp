@@ -92,7 +92,7 @@ namespace dsd::control
     {
         auto serverObj = std::make_unique<juce::DynamicObject>();
         serverObj->setProperty("name",    "DSD Mixer");
-        serverObj->setProperty("version", "1.0.0");
+        serverObj->setProperty("version", "1.2.0");
 
         auto sessionObj = std::make_unique<juce::DynamicObject>();
         sessionObj->setProperty("clientId",     clientId);

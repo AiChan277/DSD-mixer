@@ -4,9 +4,9 @@
 [![Framework](https://img.shields.io/badge/Framework-JUCE%207%20%28C%2B%2B20%29-orange.svg)](https://juce.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Build System](https://img.shields.io/badge/Build-CMake%20%2B%20Ninja%20%2B%20MSVC-brightgreen.svg)]()
-[![Type](https://img.shields.io/badge/Release-Single%20Portable%20Binary%20%28~4.8MB%29-purple.svg)]()
+[![Type](https://img.shields.io/badge/Release-Single%20Portable%20Binary%20%28~5.9MB%29-purple.svg)]()
 
-**DSD Mixer** is a software-defined, real-time digital audio mixing console for Windows x64. Level 1 provides **16 input channels and 4 independent output buses**, with per-channel DSP, native VST3 processing, application audio capture, configurable patch-based routing, an adaptive multi-core processing engine, a built-in **DSDCP v1 WebSocket remote control server**, and **Windows system tray background operation**.
+**DSD Mixer** is a software-defined, real-time digital audio mixing console for Windows x64. Level 1 provides **16 input channels and 4 independent output buses**, with per-channel DSP, native VST3 processing, application audio capture, configurable patch-based routing, an adaptive multi-core processing engine, a built-in **DSDCP v1 WebSocket remote control server**, and **Windows system tray background operation**. Version 1.2 adds built-in gate/EQ/compressor, pre/post-fader sends, auto-ducking, BS.1770 loudness metering with true-peak limiters, scenes, plugin delay compensation and drift-corrected multi-device operation with automatic device recovery.
 
 DSD Mixer is designed for workflows such as **live streaming, podcasting, broadcast production, software audio routing, live monitoring, and general-purpose real-time audio control**. It is deliberately designed as a mixer and routing system rather than a digital audio workstation (DAW): the signal path is continuous, deterministic, and centred on real-time processing and routing rather than timeline-based production.
 
@@ -386,6 +386,62 @@ Because DSD Mixer operates as a continuous real-time audio routing and mixing en
 
 ---
 
+### 12. Built-in Gate, EQ and Compressor
+
+Three zero-latency processors are available in every channel's plugin rack under **Add Plugin → DSD Built-in**, with no VST3 scan required:
+
+- **DSD Gate** — threshold, range, attack, hold, release; stereo-linked with 4 dB hysteresis
+- **DSD EQ** — high-pass (12 dB/oct), low shelf, two parametric mids and a high shelf, plus output gain
+- **DSD Compressor** — threshold, ratio, soft knee, attack, release and make-up gain; stereo-linked
+
+They behave like any other rack plugin: per-slot bypass, reordering, an editor window, and full save/restore in sessions.
+
+---
+
+### 13. Pre/Post-Fader Sends
+
+Every Routing Matrix crosspoint has a **PRE/POST** tap (toggle in the matrix inspector bar; PRE routes are tagged in the grid):
+
+- **POST** (default) — after fader and pan; follows the channel fader
+- **PRE** — after the inserts, before fader and pan; independent of the channel fader for monitor / IFB mixes, but still silenced by **MUTE**
+
+Send level changes and PRE/POST switches are ramped to avoid clicks. PRE/POST is stored in sessions and `.dsdroute` presets.
+
+---
+
+### 14. Auto-Ducking
+
+**TOOLS → Auto-Ducking** provides four rules. Each rule watches a trigger channel's **post-fader** level (so a muted or switched-off mic never ducks anything) and lowers any set of channels by a chosen depth, with threshold, attack, hold and release. Typical use: music and game audio dip automatically under the presenter's microphone.
+
+---
+
+### 15. Output Loudness and True-Peak Limiters
+
+**TOOLS → Output Loudness & Limiters** shows, for every output bus:
+
+- **ITU-R BS.1770-4 / EBU R128 loudness** — momentary, short-term and gated integrated LUFS and maximum true peak, with a target selector (−23 / −24 / −16 / −14 LUFS)
+- **True-peak limiter** — 4× oversampled detection, 1.5 ms look-ahead, adjustable ceiling (default −1 dBTP). It adds about 1.6 ms latency to that output only while enabled.
+
+---
+
+### 16. Scenes
+
+**TOOLS → Scenes** stores up to eight mix snapshots: levels, mutes, channel switches, plugin bypass states, routing (including PRE/POST), output levels and limiters, ducking rules and delay compensation. Recalling a scene never changes sources, devices or the set of loaded plugins. Scenes are saved in `.dsd` sessions and also kept in `%APPDATA%\DSDMixer\scenes.json`, so they survive a restart.
+
+---
+
+### 17. Plugin Delay Compensation
+
+Plugins that report latency (look-ahead limiters, linear-phase EQs) make their channel arrive late at shared outputs. The **Plugin Delay Compensation** switch in the Performance Monitor delays every other channel to match the slowest plugin chain. It is **off by default**, because it adds that latency to every channel; changes are faded through silence so they do not click.
+
+---
+
+### 18. Drift-Corrected Secondary Devices and Automatic Recovery
+
+Inputs and outputs on additional Windows audio devices run on their own clocks. Each is bridged through an adaptive resampling FIFO whose ratio is continuously trimmed (by at most ±2000 ppm), so latency stays constant instead of growing and samples are never dropped. If a device disappears (USB unplug, driver reset) it is reopened automatically when it returns, and the primary device is moved back to your chosen device once it reappears after a fallback. The Performance Monitor shows drift, buffering, underruns and reconnects per device.
+
+---
+
 ## Signal Flow
 
 The Level 1 architecture can be represented as follows:
@@ -583,6 +639,18 @@ cmake --build build --target AudioEngineTests ControlProtocolTests --config Rele
 .\build\AudioEngineTests.exe
 .\build\ControlProtocolTests.exe
 ```
+
+Both suites exit with a non-zero code if any check fails (checks stay active in Release builds). An optional hardware test plays a tone through a real WASAPI output and records it back through *Line 1 (Virtual Audio Cable)*:
+
+```powershell
+$env:DSD_LIVE_DEVICE_TEST = "1"; .\build\AudioEngineTests.exe
+```
+
+### Diagnostics
+
+- Crash reports are written to `%APPDATA%\DSDMixer\crashes\`. The build also produces `DSD Mixer.map`, which maps the reported addresses to functions.
+- `"DSD Mixer.exe" --quit-after=10` starts normally, runs for 10 seconds and exits through the normal shutdown path (smoke test).
+- `"DSD Mixer.exe" --snapshot=<folder>` renders the main view and the tool dialogs to PNG files and exits.
 
 ---
 
