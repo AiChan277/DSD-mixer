@@ -4,178 +4,71 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 #include "Audio/AudioTypes.h"
 #include "Audio/AudioInputSource.h"
+#include "Audio/AdaptiveResamplingFifo.h"
 
 #include <memory>
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <thread>
+#include <atomic>
 
 namespace dsd
 {
-    // Real-time lock-free ring buffer for bridging asynchronous device threads without glitch or click
-    class AudioRingBuffer
+    // Common base for a secondary WASAPI device bridged into the engine clock.
+    //
+    // The device runs on its own clock; an AdaptiveResamplingFifo converts
+    // between device and engine rates and absorbs the drift between them.
+    // The engine-side call (readBlock / writeBlock) only touches the FIFO, and
+    // only while `streamRunning` is set, so the device can be reopened at any
+    // time from the control thread (hot-plug recovery) without racing it.
+    class DeviceBridgeBase
     {
     public:
-        AudioRingBuffer(int channels = 2, int capacity = 32768)
-            : fifo(capacity), buffer(channels, capacity)
+        virtual ~DeviceBridgeBase() = default;
+
+        // Control thread: try to (re)open the device if it is not streaming.
+        // Returns true if the device is streaming afterwards.
+        virtual bool reopenIfStopped() = 0;
+        virtual bool isStreaming() const noexcept = 0;
+        virtual juce::String getBridgeDeviceName() const = 0;
+
+        const AdaptiveResamplingFifo& getFifo() const noexcept { return fifo; }
+        uint64_t getReconnectCount() const noexcept { return reconnects.load(std::memory_order_relaxed); }
+
+    protected:
+        // Engine-side guard: returns false if the stream is down (caller outputs silence).
+        bool beginEngineAccess() noexcept
         {
-            buffer.clear();
+            engineSideActive.store(true, std::memory_order_seq_cst);
+            if (streamRunning.load(std::memory_order_seq_cst))
+                return true;
+            engineSideActive.store(false, std::memory_order_release);
+            return false;
+        }
+        void endEngineAccess() noexcept { engineSideActive.store(false, std::memory_order_release); }
+
+        // Control side: stop engine access and wait until it has left the FIFO.
+        void blockEngineAccess() noexcept
+        {
+            streamRunning.store(false, std::memory_order_seq_cst);
+            while (engineSideActive.load(std::memory_order_seq_cst))
+                std::this_thread::yield();
         }
 
-        void reset()
-        {
-            fifo.reset();
-            buffer.clear();
-            isBuffering.store(true, std::memory_order_relaxed);
-            consecutiveUnderruns.store(0, std::memory_order_relaxed);
-        }
-
-        void write(const float* const* src, int numChannels, int numSamples)
-        {
-            if (numSamples <= 0 || src == nullptr) return;
-            int start1, size1, start2, size2;
-            fifo.prepareToWrite(numSamples, start1, size1, start2, size2);
-
-            const int copyCh = std::min(numChannels, buffer.getNumChannels());
-            if (size1 > 0)
-            {
-                for (int ch = 0; ch < copyCh; ++ch)
-                {
-                    if (src[ch] != nullptr)
-                        buffer.copyFrom(ch, start1, src[ch], size1);
-                    else
-                        buffer.clear(ch, start1, size1);
-                }
-                for (int ch = copyCh; ch < buffer.getNumChannels(); ++ch)
-                    buffer.clear(ch, start1, size1);
-            }
-            if (size2 > 0)
-            {
-                for (int ch = 0; ch < copyCh; ++ch)
-                {
-                    if (src[ch] != nullptr)
-                        buffer.copyFrom(ch, start2, src[ch] + size1, size2);
-                    else
-                        buffer.clear(ch, start2, size2);
-                }
-                for (int ch = copyCh; ch < buffer.getNumChannels(); ++ch)
-                    buffer.clear(ch, start2, size2);
-            }
-            fifo.finishedWrite(size1 + size2);
-
-            // Once cushion builds up to preRoll, allow reading
-            if (isBuffering.load(std::memory_order_relaxed) && fifo.getNumReady() >= preRollSamples)
-            {
-                isBuffering.store(false, std::memory_order_release);
-            }
-        }
-
-        int read(float* const* dst, int numChannels, int numSamples)
-        {
-            if (numSamples <= 0 || dst == nullptr) return 0;
-
-            // In pre-roll mode: output clean silence while initial cushion builds up
-            if (isBuffering.load(std::memory_order_acquire))
-            {
-                if (fifo.getNumReady() >= preRollSamples)
-                {
-                    isBuffering.store(false, std::memory_order_release);
-                }
-                else
-                {
-                    for (int ch = 0; ch < numChannels; ++ch)
-                    {
-                        if (dst[ch] != nullptr)
-                            juce::FloatVectorOperations::clear(dst[ch], numSamples);
-                    }
-                    return 0;
-                }
-            }
-
-            // Adaptive clock drift adjustment:
-            // If cushion exceeds 4096 samples (~85ms), gently trim 4 samples to prevent latency buildup
-            const int readyBefore = fifo.getNumReady();
-            if (readyBefore > maxComfortCushion)
-            {
-                int d1, s1, d2, s2;
-                fifo.prepareToRead(4, d1, s1, d2, s2);
-                fifo.finishedRead(s1 + s2);
-            }
-
-            int start1, size1, start2, size2;
-            fifo.prepareToRead(numSamples, start1, size1, start2, size2);
-            const int readTotal = size1 + size2;
-
-            const int copyCh = std::min(numChannels, buffer.getNumChannels());
-            if (size1 > 0)
-            {
-                for (int ch = 0; ch < copyCh; ++ch)
-                {
-                    if (dst[ch] != nullptr)
-                        juce::FloatVectorOperations::copy(dst[ch], buffer.getReadPointer(ch, start1), size1);
-                }
-            }
-            if (size2 > 0)
-            {
-                for (int ch = 0; ch < copyCh; ++ch)
-                {
-                    if (dst[ch] != nullptr)
-                        juce::FloatVectorOperations::copy(dst[ch] + size1, buffer.getReadPointer(ch, start2), size2);
-                }
-            }
-            fifo.finishedRead(readTotal);
-
-            // Glitch-free underflow recovery: zero-fill only missing samples of THIS block
-            if (readTotal < numSamples)
-            {
-                for (int ch = 0; ch < numChannels; ++ch)
-                {
-                    if (dst[ch] != nullptr)
-                    {
-                        if (readTotal > 16)
-                        {
-                            for (int i = 0; i < 16; ++i)
-                            {
-                                float ramp = 1.0f - (static_cast<float>(i) / 16.0f);
-                                dst[ch][readTotal - 16 + i] *= ramp;
-                            }
-                        }
-                        juce::FloatVectorOperations::clear(dst[ch] + readTotal, numSamples - readTotal);
-                    }
-                }
-            }
-
-            // Only re-enter buffering mode if COMPLETELY DRY (readTotal == 0) for 100 consecutive blocks (~250ms)
-            if (readTotal == 0)
-            {
-                int dryCount = consecutiveUnderruns.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (dryCount >= 100)
-                {
-                    isBuffering.store(true, std::memory_order_release);
-                }
-            }
-            else
-            {
-                consecutiveUnderruns.store(0, std::memory_order_relaxed);
-            }
-
-            return readTotal;
-        }
-
-        int getNumReady() const noexcept { return fifo.getNumReady(); }
-
-    private:
-        juce::AbstractFifo fifo;
-        juce::AudioBuffer<float> buffer;
-        std::atomic<bool> isBuffering{true};
-        std::atomic<int> consecutiveUnderruns{0};
-        static constexpr int preRollSamples = 256;     // ~5.3ms initial cushion
-        static constexpr int maxComfortCushion = 4096; // ~85ms cushion upper limit
+        AdaptiveResamplingFifo fifo;
+        std::atomic<bool> streamRunning{false};
+        std::atomic<uint64_t> deviceCallbacks{0}; // device thread heartbeat
+        uint64_t lastSeenCallbacks{0};            // control thread: stall detection
+        std::atomic<bool> engineSideActive{false};
+        std::atomic<uint64_t> reconnects{0};
     };
 
     // Dedicated input source capturing from a specific Windows audio device
-    class WindowsDeviceInputSource : public AudioInputSource, public juce::AudioIODeviceCallback
+    class WindowsDeviceInputSource : public AudioInputSource,
+                                     public juce::AudioIODeviceCallback,
+                                     public DeviceBridgeBase
     {
     public:
         WindowsDeviceInputSource(const juce::String& deviceName, juce::AudioIODeviceType* deviceType);
@@ -189,6 +82,7 @@ namespace dsd
 
         void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
         void audioDeviceStopped() override;
+        void audioDeviceError(const juce::String& errorMessage) override;
         void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
                                               int numInputChannels,
                                               float* const* outputChannelData,
@@ -196,7 +90,11 @@ namespace dsd
                                               int numSamples,
                                               const juce::AudioIODeviceCallbackContext& context) override;
 
-        bool isDeviceActive() const noexcept { return device != nullptr && device->isPlaying(); }
+        bool reopenIfStopped() override;
+        bool isStreaming() const noexcept override { return streamRunning.load(std::memory_order_relaxed); }
+        juce::String getBridgeDeviceName() const override { return devName; }
+
+        bool isDeviceActive() const noexcept { return isStreaming(); }
         juce::String getDeviceName() const noexcept { return devName; }
         double getDeviceSampleRate() const noexcept { return deviceSampleRate; }
 
@@ -204,19 +102,18 @@ namespace dsd
         juce::String devName;
         juce::AudioIODeviceType* devType{nullptr};
         std::unique_ptr<juce::AudioIODevice> device;
-        AudioRingBuffer ringBuffer{2, 32768};
+        std::mutex deviceMutex; // control-thread open/close only
 
         double targetSampleRate{48000.0};
         double deviceSampleRate{48000.0};
-        juce::LagrangeInterpolator interpolator[2];
-        juce::AudioBuffer<float> resampleBuffer;
 
         bool openDevice();
         void closeDevice();
     };
 
     // Dedicated output sink rendering to a specific Windows audio device
-    class WindowsDeviceOutputSink : public juce::AudioIODeviceCallback
+    class WindowsDeviceOutputSink : public juce::AudioIODeviceCallback,
+                                    public DeviceBridgeBase
     {
     public:
         WindowsDeviceOutputSink(const juce::String& deviceName, juce::AudioIODeviceType* deviceType);
@@ -228,6 +125,7 @@ namespace dsd
 
         void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
         void audioDeviceStopped() override;
+        void audioDeviceError(const juce::String& errorMessage) override;
         void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
                                               int numInputChannels,
                                               float* const* outputChannelData,
@@ -235,7 +133,11 @@ namespace dsd
                                               int numSamples,
                                               const juce::AudioIODeviceCallbackContext& context) override;
 
-        bool isDeviceActive() const noexcept { return device != nullptr && device->isPlaying(); }
+        bool reopenIfStopped() override;
+        bool isStreaming() const noexcept override { return streamRunning.load(std::memory_order_relaxed); }
+        juce::String getBridgeDeviceName() const override { return devName; }
+
+        bool isDeviceActive() const noexcept { return isStreaming(); }
         juce::String getDeviceName() const noexcept { return devName; }
         double getDeviceSampleRate() const noexcept { return deviceSampleRate; }
 
@@ -243,19 +145,32 @@ namespace dsd
         juce::String devName;
         juce::AudioIODeviceType* devType{nullptr};
         std::unique_ptr<juce::AudioIODevice> device;
-        AudioRingBuffer ringBuffer{2, 32768};
+        std::mutex deviceMutex; // control-thread open/close only
 
         double targetSampleRate{48000.0};
         double deviceSampleRate{48000.0};
-        juce::LagrangeInterpolator interpolator[2];
-        juce::AudioBuffer<float> resampleBuffer;
 
         bool openDevice();
         void closeDevice();
     };
 
-    // Central manager for enumerating, routing, and sharing Windows audio devices
-    class MultiDeviceManager
+    // Snapshot of one bridge for diagnostics UI.
+    struct DeviceBridgeStatus
+    {
+        juce::String deviceName;
+        bool isInput{true};
+        bool streaming{false};
+        double driftPpm{0.0};
+        double bufferedMs{0.0};
+        uint64_t underruns{0};
+        uint64_t reconnects{0};
+    };
+
+    // Central manager for enumerating, routing, and sharing Windows audio devices.
+    // Also runs device recovery: every 2 s (message thread) it reopens secondary
+    // devices that stopped and moves the primary device back to the user's
+    // chosen device once it reappears after a fallback.
+    class MultiDeviceManager : private juce::ChangeListener
     {
     public:
         static MultiDeviceManager& getInstance();
@@ -277,11 +192,48 @@ namespace dsd
         // Factory to create or get an output sink for an output bus
         std::unique_ptr<WindowsDeviceOutputSink> createOutputSinkFor(const juce::String& deviceName);
 
+        // Bridges register themselves for recovery and diagnostics.
+        void registerBridge(DeviceBridgeBase* bridge);
+        void unregisterBridge(DeviceBridgeBase* bridge);
+        std::vector<DeviceBridgeStatus> getBridgeStatus() const;
+
+        // One recovery pass (normally driven by the internal timer).
+        void runRecoveryPass();
+
+        juce::String getPreferredPrimaryDeviceName() const;
+        uint64_t getPrimaryRecoveryCount() const noexcept { return primaryRecoveries.load(std::memory_order_relaxed); }
+
     private:
         MultiDeviceManager() = default;
-        ~MultiDeviceManager() = default;
+        ~MultiDeviceManager() override = default;
+
+        // Owned timer (created in initialize, destroyed in shutdown). The
+        // singleton itself must not be a juce::Timer: a Timer pins JUCE's
+        // shared timer thread, and a static one would tear it down after
+        // JUCE has shut down (crash on exit).
+        struct RecoveryTimer : public juce::Timer
+        {
+            explicit RecoveryTimer(MultiDeviceManager& o) : owner(o) {}
+            ~RecoveryTimer() override { stopTimer(); }
+            void timerCallback() override { owner.runRecoveryPass(); }
+            MultiDeviceManager& owner;
+        };
+        std::unique_ptr<RecoveryTimer> recoveryTimer;
+
+        void changeListenerCallback(juce::ChangeBroadcaster* source) override;
+        bool isDeviceNamePresent(const juce::String& name) const;
+        void capturePreferredSetup();
 
         juce::AudioDeviceManager* juceManagerRef{nullptr};
-        std::mutex mutex;
+        mutable std::mutex mutex;
+
+        mutable std::mutex bridgeMutex;
+        std::vector<DeviceBridgeBase*> bridges;
+
+        bool havePreferredSetup{false};
+        juce::AudioDeviceManager::AudioDeviceSetup preferredSetup;
+        juce::String preferredTypeName;
+        bool restoringPrimary{false};
+        std::atomic<uint64_t> primaryRecoveries{0};
     };
 } // namespace dsd

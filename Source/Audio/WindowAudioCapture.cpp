@@ -317,6 +317,8 @@ namespace dsd
     {
         MmcssScope()
         {
+            // Capture thread resamples audio: keep denormals flushed to zero.
+            juce::FloatVectorOperations::disableDenormalisedNumberSupport(true);
             timeBeginPeriod(1);
             DWORD taskIndex = 0;
             hTask = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);

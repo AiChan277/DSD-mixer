@@ -25,6 +25,7 @@ namespace dsd
 
         channelManager.prepare(currentSampleRate, currentBlockSize);
         routingEngine.prepare(currentSampleRate, currentBlockSize);
+        autoDucker.prepare(currentSampleRate);
         busManager.prepare(currentSampleRate, currentBlockSize);
         outputManager.prepare(currentSampleRate, currentBlockSize);
         dspScheduler.setSampleRate(currentSampleRate);
@@ -67,6 +68,10 @@ namespace dsd
         if (numSamples <= 0)
             return;
 
+        // Flush denormals to zero for this callback. Decaying filter states
+        // and plugin tails otherwise hit the slow denormal path on silence.
+        juce::ScopedNoDenormals noDenormals;
+
         if (tempInputBuffer.getNumSamples() < numSamples)
             tempInputBuffer.setSize(std::max(2, std::max(numInputChannels, tempInputBuffer.getNumChannels())), numSamples, false, true, true);
 
@@ -86,10 +91,16 @@ namespace dsd
         for (int ch = numChannelsToCopy; ch < tempInputBuffer.getNumChannels(); ++ch)
             tempInputBuffer.clear(ch, 0, numSamples);
 
+        // Plugin delay compensation targets (from each rack's latency last block)
+        updateDelayCompensation();
+
         // ====================================================================
         // PHASE 2: Channel DSP Processing (Multicore Scheduler Parallel Dispatch)
         // ====================================================================
         dspScheduler.processChannelsParallel(channelManager, tempInputBuffer, numSamples);
+
+        // Auto-ducking: keyed from post-fader channel signals, applied before routing
+        autoDucker.process(channelManager, numSamples);
 
         // ====================================================================
         // PHASE 3: Routing Matrix 16x4 Accumulation
@@ -125,6 +136,7 @@ namespace dsd
         perfStats.cpuLoadPercent.store(currentLoad, std::memory_order_relaxed);
         perfStats.deadlineMs.store(deadlineMs, std::memory_order_relaxed);
         perfStats.currentHeadroomMs.store(headroomMs, std::memory_order_relaxed);
+        blockTimingHistogram.record(elapsedSec, deadlineSec);
 
         // Rolling EMA smoothing (~250 ms window): alpha = 0.05
         float prevAvgLoad = perfStats.avgLoadPercent.load(std::memory_order_relaxed);
@@ -166,6 +178,32 @@ namespace dsd
         // PHASE 6: Adaptive Worker Pool Boundary Evaluation
         // ====================================================================
         dspScheduler.updateAdaptiveWorkerCount(elapsedSec, deadlineSec, channelManager.getNumChannels());
+    }
+
+    void AudioEngine::updateDelayCompensation() noexcept
+    {
+        const int numCh = channelManager.getNumChannels();
+        const bool enabled = pdcEnabled.load(std::memory_order_relaxed);
+
+        int maxLatency = 0;
+        if (enabled)
+        {
+            for (int i = 0; i < numCh; ++i)
+                if (const auto* ch = channelManager.getChannel(i))
+                    maxLatency = std::max(maxLatency, ch->getPluginRack().getProcessingLatencySamples());
+            maxLatency = std::min(maxLatency, CompensationDelay::kMaxDelaySamples);
+        }
+
+        for (int i = 0; i < numCh; ++i)
+        {
+            if (auto* ch = channelManager.getChannel(i))
+            {
+                const int own = ch->getPluginRack().getProcessingLatencySamples();
+                ch->setCompensationDelaySamples(enabled ? std::max(0, maxLatency - own) : 0);
+            }
+        }
+
+        pdcLatencySamples.store(maxLatency, std::memory_order_relaxed);
     }
 
     std::vector<CaptureDiagnostics> AudioEngine::getActiveCaptureDiagnostics() const

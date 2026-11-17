@@ -26,7 +26,13 @@ namespace dsd
 
     AppSettings::~AppSettings()
     {
-        saveIfNeeded();
+        // Normally already closed by shutdown(); nothing JUCE-dependent here.
+    }
+
+    void AppSettings::shutdown()
+    {
+        appProperties.saveIfNeeded();
+        appProperties.closeFiles();
     }
 
     bool AppSettings::getStartRemoteServerAuto() const

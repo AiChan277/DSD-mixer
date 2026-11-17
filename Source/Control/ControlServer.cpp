@@ -255,25 +255,27 @@ namespace dsd::control
             return;
         }
 
-        DSDCPCommand cmd;
-        auto extractErr = extractCommand(frame, cmd);
-        if (extractErr.has_value())
-        {
-            webSocketServer_.sendText(ws, serialiseResponse(*extractErr).toStdString());
-            return;
-        }
-
-        // Check v1 restriction: session.load / session.save are NOT allowed
+        // v1 restriction: remote session.load / session.save are NOT allowed.
+        // Checked before parsing so clients get PermissionDenied rather than a
+        // generic unknown-method error.
         if (frame.root.hasProperty("method"))
         {
             const auto m = frame.root["method"].toString();
             if (m == "session.load" || m == "session.save")
             {
                 webSocketServer_.sendText(ws,
-                    serialiseResponse(DSDCPResponse::fail(cmd.id, ErrorCode::PermissionDenied,
+                    serialiseResponse(DSDCPResponse::fail(frame.root["id"].toString(), ErrorCode::PermissionDenied,
                                                          "Remote session load/save is not allowed in v1")).toStdString());
                 return;
             }
+        }
+
+        DSDCPCommand cmd;
+        auto extractErr = extractCommand(frame, cmd);
+        if (extractErr.has_value())
+        {
+            webSocketServer_.sendText(ws, serialiseResponse(*extractErr).toStdString());
+            return;
         }
 
         // Dispatch command execution to JUCE message thread

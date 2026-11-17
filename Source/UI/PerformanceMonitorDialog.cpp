@@ -3,6 +3,60 @@
 
 namespace dsd
 {
+    void BlockTimingHistogramView::setSnapshot(const BlockTimingHistogram::Snapshot& newSnapshot)
+    {
+        if (newSnapshot.total == snapshot.total && newSnapshot.counts == snapshot.counts)
+            return;
+
+        snapshot = newSnapshot;
+        repaint();
+    }
+
+    void BlockTimingHistogramView::paint(juce::Graphics& g)
+    {
+        auto area = getLocalBounds().toFloat();
+        g.setColour(DSDLookAndFeel::getOledBlack());
+        g.fillRoundedRectangle(area, 3.0f);
+
+        const float labelH = 14.0f;
+        auto plot = area.reduced(6.0f, 4.0f);
+        auto labels = plot.removeFromBottom(labelH);
+
+        uint64_t maxCount = 0;
+        for (auto c : snapshot.counts)
+            maxCount = std::max(maxCount, c);
+        const double logMax = std::log10(static_cast<double>(maxCount) + 1.0);
+
+        const int n = BlockTimingHistogram::kNumBuckets;
+        const float slotW = plot.getWidth() / static_cast<float>(n);
+
+        g.setFont(juce::FontOptions(9.5f));
+        for (int i = 0; i < n; ++i)
+        {
+            const auto count = snapshot.counts[static_cast<size_t>(i)];
+            const float x = plot.getX() + slotW * static_cast<float>(i);
+
+            if (count > 0 && logMax > 0.0)
+            {
+                const float frac = static_cast<float>(std::log10(static_cast<double>(count) + 1.0) / logMax);
+                const float barH = std::max(2.0f, plot.getHeight() * frac);
+                juce::Colour colour = DSDLookAndFeel::getAccentGreen();
+                if (i >= n - 1)
+                    colour = DSDLookAndFeel::getAccentRed();
+                else if (i >= 6)
+                    colour = DSDLookAndFeel::getMeterYellow();
+                g.setColour(colour);
+                g.fillRect(x + 2.0f, plot.getBottom() - barH, slotW - 4.0f, barH);
+            }
+
+            const juce::String label = (i < n - 1)
+                ? juce::String(juce::roundToInt(BlockTimingHistogram::kUpperEdges[static_cast<size_t>(i)] * 100.0f)) + "%"
+                : juce::String(">100%");
+            g.setColour(DSDLookAndFeel::getTextSecondary());
+            g.drawText(label, juce::Rectangle<float>(x, labels.getY(), slotW, labelH), juce::Justification::centred);
+        }
+    }
+
     PerformanceMonitorDialog::PerformanceMonitorDialog(AudioEngine& engine)
         : audioEngineRef(engine)
     {
@@ -142,9 +196,42 @@ namespace dsd
         totalLatencyLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentGreen());
         addAndMakeVisible(totalLatencyLabel);
 
+        bridgeStatusLabel.setFont(juce::FontOptions(10.5f));
+        bridgeStatusLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+        bridgeStatusLabel.setText("Secondary devices: none", juce::dontSendNotification);
+        addAndMakeVisible(bridgeStatusLabel);
+
+        pdcToggle.setColour(juce::ToggleButton::textColourId, DSDLookAndFeel::getTextPrimary());
+        pdcToggle.setColour(juce::ToggleButton::tickColourId, DSDLookAndFeel::getAccentGreen());
+        pdcToggle.setToggleState(audioEngineRef.isPluginDelayCompensationEnabled(), juce::dontSendNotification);
+        pdcToggle.onClick = [this]()
+        {
+            audioEngineRef.setPluginDelayCompensationEnabled(pdcToggle.getToggleState());
+        };
+        addAndMakeVisible(pdcToggle);
+
+        pdcInfoLabel.setFont(juce::FontOptions(10.5f));
+        pdcInfoLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+        addAndMakeVisible(pdcInfoLabel);
+
+        // ====================================================================
+        // PANEL 4: Block Timing Distribution
+        // ====================================================================
+        timingSectionLabel.setText("BLOCK TIMING DISTRIBUTION (DSP time as % of deadline)", juce::dontSendNotification);
+        timingSectionLabel.setFont(juce::FontOptions(12.0f, juce::Font::bold));
+        timingSectionLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentBlue());
+        addAndMakeVisible(timingSectionLabel);
+
+        timingSummaryLabel.setText("p95: --  |  p99: --  |  Blocks: 0  |  Over deadline: 0", juce::dontSendNotification);
+        timingSummaryLabel.setFont(juce::FontOptions(11.0f));
+        timingSummaryLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+        addAndMakeVisible(timingSummaryLabel);
+
+        addAndMakeVisible(timingHistogramView);
+
         timerCallback();
         startTimerHz(30);
-        setSize(640, 700);
+        setSize(640, 900);
     }
 
     PerformanceMonitorDialog::~PerformanceMonitorDialog()
@@ -261,7 +348,77 @@ namespace dsd
             }
         }
 
-        // 4. Latency Profile & Signal Path Diagnostics
+        // 4. Block timing distribution
+        {
+            const auto hist = audioEngineRef.getBlockTimingHistogram().snapshot();
+            timingHistogramView.setSnapshot(hist);
+
+            auto describe = [](float edge) -> juce::String
+            {
+                if (edge <= 0.0f)
+                    return "--";
+                if (edge > 1.0f)
+                    return "> 100%";
+                return "<= " + juce::String(juce::roundToInt(edge * 100.0f)) + "%";
+            };
+
+            const float p95 = hist.percentileUpperEdge(95.0);
+            const float p99 = hist.percentileUpperEdge(99.0);
+            const uint64_t over = hist.counts[static_cast<size_t>(BlockTimingHistogram::kNumBuckets - 1)];
+
+            timingSummaryLabel.setText("p95: " + describe(p95) + "  |  p99: " + describe(p99)
+                                       + "  |  Blocks: " + juce::String(static_cast<juce::int64>(hist.total))
+                                       + "  |  Over deadline: " + juce::String(static_cast<juce::int64>(over)),
+                                       juce::dontSendNotification);
+            timingSummaryLabel.setColour(juce::Label::textColourId,
+                                         over > 0 ? DSDLookAndFeel::getAccentRed()
+                                                  : (p99 > 0.6f ? DSDLookAndFeel::getMeterYellow()
+                                                                : DSDLookAndFeel::getTextSecondary()));
+        }
+
+        // 5. Secondary device bridges (drift-corrected)
+        {
+            const auto bridges = MultiDeviceManager::getInstance().getBridgeStatus();
+            if (bridges.empty())
+            {
+                bridgeStatusLabel.setText("Secondary devices: none (single-clock path)", juce::dontSendNotification);
+                bridgeStatusLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+            }
+            else
+            {
+                juce::StringArray parts;
+                bool problem = false;
+                for (const auto& b : bridges)
+                {
+                    problem = problem || !b.streaming;
+                    parts.add(juce::String(b.isInput ? "IN " : "OUT ") + b.deviceName.substring(0, 22)
+                              + (b.streaming ? juce::String::formatted(" %+.0f ppm %.1f ms", b.driftPpm, b.bufferedMs)
+                                             : juce::String(" RECONNECTING"))
+                              + (b.underruns > 0 ? " u" + juce::String(static_cast<juce::int64>(b.underruns)) : juce::String())
+                              + (b.reconnects > 0 ? " r" + juce::String(static_cast<juce::int64>(b.reconnects)) : juce::String()));
+                }
+                bridgeStatusLabel.setText("Secondary devices: " + parts.joinIntoString("  |  "), juce::dontSendNotification);
+                bridgeStatusLabel.setColour(juce::Label::textColourId,
+                                            problem ? DSDLookAndFeel::getAccentRed() : DSDLookAndFeel::getTextSecondary());
+            }
+        }
+
+        // 5b. Plugin delay compensation
+        {
+            pdcToggle.setToggleState(audioEngineRef.isPluginDelayCompensationEnabled(), juce::dontSendNotification);
+            const int pdcSamples = audioEngineRef.getCompensatedLatencySamples();
+            const double sr = audioEngineRef.getCurrentSampleRate();
+            const double pdcMs = (sr > 0.0) ? pdcSamples * 1000.0 / sr : 0.0;
+            if (audioEngineRef.isPluginDelayCompensationEnabled())
+                pdcInfoLabel.setText(juce::String::formatted("ON: all channels aligned to the slowest plugin chain (+%d smp / %.2f ms)",
+                                                             pdcSamples, pdcMs),
+                                     juce::dontSendNotification);
+            else
+                pdcInfoLabel.setText("OFF: channels with latency plugins arrive late at shared outputs (no added latency)",
+                                     juce::dontSendNotification);
+        }
+
+        // 6. Latency Profile & Signal Path Diagnostics
         const auto activeMode = audioEngineRef.getCaptureLatencyMode();
         auto updateBtnStyle = [activeMode](juce::TextButton& btn, CaptureLatencyMode mode)
         {
@@ -383,6 +540,19 @@ namespace dsd
         pathBreakdownLabel2.setBounds(bounds.removeFromTop(16));
         bounds.removeFromTop(4);
         totalLatencyLabel.setBounds(bounds.removeFromTop(22));
+        bridgeStatusLabel.setBounds(bounds.removeFromTop(18));
+        auto pdcRow = bounds.removeFromTop(24);
+        pdcToggle.setBounds(pdcRow.removeFromLeft(210));
+        pdcInfoLabel.setBounds(pdcRow);
+
+        // PANEL 4: Block Timing Distribution
+        bounds.removeFromTop(10);
+        timingPanelDividerY = bounds.getY();
+        bounds.removeFromTop(8);
+        timingSectionLabel.setBounds(bounds.removeFromTop(20));
+        timingSummaryLabel.setBounds(bounds.removeFromTop(18));
+        bounds.removeFromTop(4);
+        timingHistogramView.setBounds(bounds.removeFromTop(90));
     }
 
     void PerformanceMonitorDialog::paint(juce::Graphics& g)
@@ -393,5 +563,7 @@ namespace dsd
         g.setColour(DSDLookAndFeel::getConsoleBevel().withAlpha(0.6f));
         g.drawHorizontalLine(162, 16.0f, static_cast<float>(getWidth() - 16));
         g.drawHorizontalLine(388, 16.0f, static_cast<float>(getWidth() - 16));
+        if (timingPanelDividerY > 0)
+            g.drawHorizontalLine(timingPanelDividerY, 16.0f, static_cast<float>(getWidth() - 16));
     }
 } // namespace dsd

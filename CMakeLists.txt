@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(DSDMixer VERSION 1.0.0 LANGUAGES C CXX)
+project(DSDMixer VERSION 1.2.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,7 +38,7 @@ juce_add_binary_data(DSDMixerBinaryData
 
 juce_add_gui_app(DSDMixer
     PRODUCT_NAME "DSD Mixer"
-    VERSION "1.0.0"
+    VERSION "1.2.0"
     COMPANY_NAME "DSD Audio"
     BUNDLE_ID "com.dsd.mixer"
 )
@@ -48,6 +48,8 @@ target_sources(DSDMixer PRIVATE
     Source/Main.cpp
     Source/Application/DSDApplication.h
     Source/Application/DSDApplication.cpp
+    Source/Application/CrashReporter.h
+    Source/Application/CrashReporter.cpp
     Source/Audio/AudioTypes.h
     Source/Audio/ProcessCpuTracker.h
     Source/Audio/ProcessCpuTracker.cpp
@@ -73,6 +75,7 @@ target_sources(DSDMixer PRIVATE
     Source/Channel/ChannelManager.cpp
     Source/Routing/RoutingEngine.h
     Source/Routing/RoutingEngine.cpp
+    Source/Routing/AutoDucker.cpp
     Source/Bus/AudioBus.h
     Source/Bus/AudioBus.cpp
     Source/Bus/BusManager.h
@@ -85,8 +88,10 @@ target_sources(DSDMixer PRIVATE
     Source/Plugin/PluginRack.cpp
     Source/Plugin/PluginManager.h
     Source/Plugin/PluginManager.cpp
+    Source/Plugin/BuiltInPlugins.cpp
     Source/Session/SessionManager.h
     Source/Session/SessionManager.cpp
+    Source/Session/SceneManager.cpp
     Source/Session/AppSettings.h
     Source/Session/AppSettings.cpp
     Source/UI/DSDLookAndFeel.h
@@ -109,6 +114,8 @@ target_sources(DSDMixer PRIVATE
     Source/UI/RoutingMatrixDialog.cpp
     Source/UI/PerformanceMonitorDialog.h
     Source/UI/PerformanceMonitorDialog.cpp
+    Source/UI/ToolsDialogs.h
+    Source/UI/ToolsDialogs.cpp
     Source/UI/PluginRackDialog.h
     Source/UI/PluginRackDialog.cpp
     Source/UI/StageInspectorDialog.h
@@ -157,6 +164,11 @@ target_compile_definitions(DSDMixer PRIVATE
     JUCE_PLUGINHOST_AU=0
 )
 
+if (MSVC)
+    # Map file: resolves crash-report addresses to functions without shipping symbols.
+    target_link_options(DSDMixer PRIVATE "/MAP")
+endif()
+
 target_link_libraries(DSDMixer PRIVATE
     juce::juce_core
     juce::juce_events
@@ -185,15 +197,18 @@ add_executable(AudioEngineTests
     Source/Channel/ChannelManager.cpp
     Source/Scheduler/DSPScheduler.cpp
     Source/Routing/RoutingEngine.cpp
+    Source/Routing/AutoDucker.cpp
     Source/Bus/AudioBus.cpp
     Source/Bus/BusManager.cpp
     Source/Output/OutputBus.cpp
     Source/Output/OutputManager.cpp
     Source/Plugin/PluginRack.cpp
     Source/Plugin/PluginManager.cpp
+    Source/Plugin/BuiltInPlugins.cpp
     Source/Audio/AudioEngine.cpp
     Source/Audio/ProcessCpuTracker.cpp
     Source/Session/SessionManager.cpp
+    Source/Session/SceneManager.cpp
     Source/Audio/AudioDeviceManager.cpp
     Source/Audio/MultiDeviceManager.cpp
     Source/Audio/WindowAudioCapture.cpp
@@ -241,13 +256,16 @@ add_executable(ControlProtocolTests
     Source/Channel/ChannelManager.cpp
     Source/Scheduler/DSPScheduler.cpp
     Source/Routing/RoutingEngine.cpp
+    Source/Routing/AutoDucker.cpp
     Source/Bus/AudioBus.cpp
     Source/Bus/BusManager.cpp
     Source/Output/OutputBus.cpp
     Source/Output/OutputManager.cpp
     Source/Plugin/PluginRack.cpp
     Source/Plugin/PluginManager.cpp
+    Source/Plugin/BuiltInPlugins.cpp
     Source/Session/SessionManager.cpp
+    Source/Session/SceneManager.cpp
     Source/DSP/MeterProcessor.cpp
 )
 

@@ -29,6 +29,9 @@ namespace dsd
         faderProcessor.prepare(sampleRate);
         faderProcessor.reset(GainProcessor::dbToLinear(faderDb.load()));
 
+        panProcessor.setPan(pan.load(std::memory_order_relaxed));
+        panProcessor.snapToTarget();
+
         hpfFilter.prepare(sampleRate);
         hpfFilter.setCutoffHz(80.0);
         hpfFilter.setBypassed(!hpfEnabled.load(std::memory_order_relaxed));
@@ -39,6 +42,7 @@ namespace dsd
         meterProcessor.prepare(sampleRate);
 
         pluginRack.prepare(sampleRate, maxBlockSize);
+        compensationDelay.prepare(sampleRate);
 
         std::lock_guard<std::mutex> lock(sourceMutex);
         if (inputSource != nullptr)
@@ -185,6 +189,12 @@ namespace dsd
         midiBuffer.clear();
         pluginRack.processBlock(channelBuffer, midiBuffer, numSamples);
 
+        // 7b. Plugin delay compensation (aligns this channel with the slowest one)
+        compensationDelay.process(channelBuffer.getWritePointer(0),
+                                  channelBuffer.getWritePointer(1),
+                                  numSamples,
+                                  compensationTarget.load(std::memory_order_relaxed));
+
         // Meter Stage C: Post-VST
         meterPostVSTProc.processBlock(channelBuffer.getReadPointer(0),
                                       channelBuffer.getReadPointer(1),
@@ -220,6 +230,18 @@ namespace dsd
             dmBuffer.setSize(2, std::max(currentBlockSize, numSamples), false, true, true);
         dmBuffer.copyFrom(0, 0, channelBuffer.getReadPointer(0), numSamples);
         dmBuffer.copyFrom(1, 0, channelBuffer.getReadPointer(1), numSamples);
+    }
+
+    void AudioChannel::applyOutputGainRamp(float g0, float g1, int numSamples) noexcept
+    {
+        if (numSamples <= 0 || channelBuffer.getNumSamples() < numSamples || dmBuffer.getNumSamples() < numSamples)
+            return;
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            channelBuffer.applyGainRamp(ch, 0, numSamples, g0, g1);
+            dmBuffer.applyGainRamp(ch, 0, numSamples, g0, g1);
+        }
     }
 
     const MeterValues& AudioChannel::getMeter(MeterStage stage) const noexcept

@@ -4,6 +4,8 @@
 #include "Audio/AudioTypes.h"
 #include "DSP/GainProcessor.h"
 #include "DSP/MeterProcessor.h"
+#include "DSP/TruePeakLimiter.h"
+#include "DSP/LoudnessMeter.h"
 #include <atomic>
 #include <string>
 #include <memory>
@@ -43,6 +45,12 @@ namespace dsd
         void setMonitor(bool isMon) noexcept { monitor.store(isMon, std::memory_order_relaxed); }
         bool getMonitor() const noexcept { return monitor.load(std::memory_order_relaxed); }
 
+        // Output protection and loudness (post-fader, post-limiter = what leaves the bus)
+        TruePeakLimiter& getLimiter() noexcept { return limiter; }
+        const TruePeakLimiter& getLimiter() const noexcept { return limiter; }
+        LoudnessMeter& getLoudnessMeter() noexcept { return loudness; }
+        const LoudnessMeter& getLoudnessMeter() const noexcept { return loudness; }
+
         MeterValues& getMeterValues() noexcept { return meterValues; }
         const MeterValues& getMeterValues() const noexcept { return meterValues; }
 
@@ -64,6 +72,8 @@ namespace dsd
         GainProcessor faderProcessor;
         MeterProcessor meterProcessor;
         MeterValues meterValues;
+        TruePeakLimiter limiter;
+        LoudnessMeter loudness;
 
         juce::AudioBuffer<float> busBuffer;
         std::unique_ptr<WindowsDeviceOutputSink> outputSink;

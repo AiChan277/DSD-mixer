@@ -1,4 +1,5 @@
 #include "UI/PluginRackDialog.h"
+#include "Plugin/BuiltInPlugins.h"
 #include "UI/DSDLookAndFeel.h"
 #include "Plugin/PluginManager.h"
 #include <map>
@@ -409,6 +410,16 @@ namespace dsd
         juce::PopupMenu menu;
         auto types = list.getTypes();
 
+        // Built-in zero-latency processors (always available, no scan needed).
+        const auto builtIns = BuiltInPlugins::getDescriptions();
+        {
+            juce::PopupMenu builtInMenu;
+            for (int i = 0; i < builtIns.size(); ++i)
+                builtInMenu.addItem(50 + i, builtIns[i].name);
+            menu.addSubMenu("DSD Built-in (Gate / EQ / Compressor)", builtInMenu);
+            menu.addSeparator();
+        }
+
         if (pm.isScanning())
         {
             menu.addItem(-1, "[ VST3 background scan running... ]", false);
@@ -455,8 +466,20 @@ namespace dsd
         }
 
         menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&addPluginBtn),
-            [this, types](int result)
+            [this, types, builtIns](int result)
             {
+                if (result >= 50 && result < 50 + builtIns.size())
+                {
+                    juce::String err;
+                    auto plugin = PluginManager::getInstance().loadPlugin(builtIns[result - 50], err);
+                    if (plugin != nullptr)
+                    {
+                        channelRef.getPluginRack().addPlugin(std::move(plugin), builtIns[result - 50].name);
+                        refreshList();
+                    }
+                    return;
+                }
+
                 if (result == 1)
                 {
                     onScanFolderClicked();
