@@ -3,6 +3,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Audio/AudioEngine.h"
 #include "Audio/ProcessCpuTracker.h"
+#include "Audio/MultiDeviceManager.h"
 #include <vector>
 
 namespace dsd
@@ -70,6 +71,7 @@ namespace dsd
         juce::Label pathBreakdownLabel1;
         juce::Label pathBreakdownLabel2;
         juce::Label totalLatencyLabel;
+        juce::Label bridgeStatusLabel;
         juce::ToggleButton pdcToggle{"Plugin Delay Compensation"};
         juce::Label pdcInfoLabel;
 

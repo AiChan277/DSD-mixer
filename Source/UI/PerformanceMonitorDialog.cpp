@@ -196,6 +196,11 @@ namespace dsd
         totalLatencyLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentGreen());
         addAndMakeVisible(totalLatencyLabel);
 
+        bridgeStatusLabel.setFont(juce::FontOptions(10.5f));
+        bridgeStatusLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+        bridgeStatusLabel.setText("Secondary devices: none", juce::dontSendNotification);
+        addAndMakeVisible(bridgeStatusLabel);
+
         pdcToggle.setColour(juce::ToggleButton::textColourId, DSDLookAndFeel::getTextPrimary());
         pdcToggle.setColour(juce::ToggleButton::tickColourId, DSDLookAndFeel::getAccentGreen());
         pdcToggle.setToggleState(audioEngineRef.isPluginDelayCompensationEnabled(), juce::dontSendNotification);
@@ -226,7 +231,7 @@ namespace dsd
 
         timerCallback();
         startTimerHz(30);
-        setSize(640, 880);
+        setSize(640, 900);
     }
 
     PerformanceMonitorDialog::~PerformanceMonitorDialog()
@@ -371,7 +376,34 @@ namespace dsd
                                                                 : DSDLookAndFeel::getTextSecondary()));
         }
 
-        // 5. Plugin delay compensation
+        // 5. Secondary device bridges (drift-corrected)
+        {
+            const auto bridges = MultiDeviceManager::getInstance().getBridgeStatus();
+            if (bridges.empty())
+            {
+                bridgeStatusLabel.setText("Secondary devices: none (single-clock path)", juce::dontSendNotification);
+                bridgeStatusLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+            }
+            else
+            {
+                juce::StringArray parts;
+                bool problem = false;
+                for (const auto& b : bridges)
+                {
+                    problem = problem || !b.streaming;
+                    parts.add(juce::String(b.isInput ? "IN " : "OUT ") + b.deviceName.substring(0, 22)
+                              + (b.streaming ? juce::String::formatted(" %+.0f ppm %.1f ms", b.driftPpm, b.bufferedMs)
+                                             : juce::String(" RECONNECTING"))
+                              + (b.underruns > 0 ? " u" + juce::String(static_cast<juce::int64>(b.underruns)) : juce::String())
+                              + (b.reconnects > 0 ? " r" + juce::String(static_cast<juce::int64>(b.reconnects)) : juce::String()));
+                }
+                bridgeStatusLabel.setText("Secondary devices: " + parts.joinIntoString("  |  "), juce::dontSendNotification);
+                bridgeStatusLabel.setColour(juce::Label::textColourId,
+                                            problem ? DSDLookAndFeel::getAccentRed() : DSDLookAndFeel::getTextSecondary());
+            }
+        }
+
+        // 5b. Plugin delay compensation
         {
             pdcToggle.setToggleState(audioEngineRef.isPluginDelayCompensationEnabled(), juce::dontSendNotification);
             const int pdcSamples = audioEngineRef.getCompensatedLatencySamples();
@@ -508,6 +540,7 @@ namespace dsd
         pathBreakdownLabel2.setBounds(bounds.removeFromTop(16));
         bounds.removeFromTop(4);
         totalLatencyLabel.setBounds(bounds.removeFromTop(22));
+        bridgeStatusLabel.setBounds(bounds.removeFromTop(18));
         auto pdcRow = bounds.removeFromTop(24);
         pdcToggle.setBounds(pdcRow.removeFromLeft(210));
         pdcInfoLabel.setBounds(pdcRow);

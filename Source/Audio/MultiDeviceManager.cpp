@@ -1,13 +1,21 @@
 #include "Audio/MultiDeviceManager.h"
 #include <iostream>
+#include <algorithm>
+#include <cmath>
 
 namespace dsd
 {
     namespace
     {
-        // Resample scratch is allocated once when a device opens; the device
-        // callbacks only ever shrink/grow within this capacity (no allocation).
-        constexpr int kMaxResampleFrames = 32768;
+        // Soft knee just below full scale on dedicated DAC outputs.
+        inline float softClip(float x) noexcept
+        {
+            if (x > 0.988f)
+                return 0.988f + 0.0119f * std::tanh((x - 0.988f) / 0.0119f);
+            if (x < -0.988f)
+                return -0.988f + 0.0119f * std::tanh((x + 0.988f) / 0.0119f);
+            return x;
+        }
     }
 
     // =========================================================================
@@ -17,15 +25,20 @@ namespace dsd
         : devName(deviceName), devType(deviceType)
     {
         openDevice();
+        MultiDeviceManager::getInstance().registerBridge(this);
     }
 
     WindowsDeviceInputSource::~WindowsDeviceInputSource()
     {
+        MultiDeviceManager::getInstance().unregisterBridge(this);
         closeDevice();
     }
 
     bool WindowsDeviceInputSource::openDevice()
     {
+        std::lock_guard<std::mutex> lock(deviceMutex);
+        blockEngineAccess();
+
         if (devType == nullptr || devName.isEmpty() || devName == "None")
             return false;
 
@@ -53,18 +66,14 @@ namespace dsd
                     if (deviceSampleRate <= 0.0)
                         deviceSampleRate = 48000.0;
 
-                    interpolator[0].reset();
-                    interpolator[1].reset();
-                    resampleBuffer.setSize(2, kMaxResampleFrames, false, true, false);
-
-                    ringBuffer.reset();
+                    // Device (producer) rate -> engine (consumer) rate, drift-corrected.
+                    fifo.prepare(deviceSampleRate, targetSampleRate, 2);
                     device->start(this);
-                    return true;
+                    streamRunning.store(device->isPlaying(), std::memory_order_seq_cst);
+                    return device->isPlaying();
                 }
-                else
-                {
-                    device.reset();
-                }
+
+                device.reset();
             }
         }
         catch (...)
@@ -77,20 +86,44 @@ namespace dsd
 
     void WindowsDeviceInputSource::closeDevice()
     {
+        std::lock_guard<std::mutex> lock(deviceMutex);
+        blockEngineAccess();
         if (device != nullptr)
         {
             device->stop();
             device->close();
             device.reset();
         }
-        ringBuffer.reset();
+    }
+
+    bool WindowsDeviceInputSource::reopenIfStopped()
+    {
+        const uint64_t callbacks = deviceCallbacks.load(std::memory_order_relaxed);
+        const bool stalled = callbacks == lastSeenCallbacks;
+        lastSeenCallbacks = callbacks;
+
+        if (isStreaming() && !stalled)
+            return true;
+
+        closeDevice();
+        const bool ok = openDevice();
+        if (ok)
+            reconnects.fetch_add(1, std::memory_order_relaxed);
+        lastSeenCallbacks = deviceCallbacks.load(std::memory_order_relaxed);
+        return ok;
     }
 
     void WindowsDeviceInputSource::prepare(double sampleRate, int /*maxBlockSize*/)
     {
-        targetSampleRate = (sampleRate > 1000.0) ? sampleRate : 48000.0;
-        if (device == nullptr)
+        const double newRate = (sampleRate > 1000.0) ? sampleRate : 48000.0;
+        const bool rateChanged = std::abs(newRate - targetSampleRate) > 0.5;
+        targetSampleRate = newRate;
+
+        if (rateChanged || !isStreaming())
+        {
+            closeDevice();
             openDevice();
+        }
     }
 
     void WindowsDeviceInputSource::releaseResources()
@@ -102,26 +135,30 @@ namespace dsd
                                             const juce::AudioBuffer<float>& /*deviceInput*/,
                                             int numSamples)
     {
-        if (device == nullptr || !device->isPlaying())
+        if (!beginEngineAccess())
         {
             for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
                 buffer.clear(ch, 0, numSamples);
             return;
         }
 
-        ringBuffer.read(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), numSamples);
+        fifo.pull(buffer.getArrayOfWritePointers(), buffer.getNumChannels(), numSamples);
+        endEngineAccess();
     }
 
     void WindowsDeviceInputSource::audioDeviceAboutToStart(juce::AudioIODevice* /*device*/)
     {
-        interpolator[0].reset();
-        interpolator[1].reset();
-        ringBuffer.reset();
     }
 
     void WindowsDeviceInputSource::audioDeviceStopped()
     {
-        ringBuffer.reset();
+        streamRunning.store(false, std::memory_order_seq_cst);
+    }
+
+    void WindowsDeviceInputSource::audioDeviceError(const juce::String& /*errorMessage*/)
+    {
+        // Device lost (unplugged / driver reset): go silent; recovery reopens it.
+        streamRunning.store(false, std::memory_order_seq_cst);
     }
 
     void WindowsDeviceInputSource::audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
@@ -131,47 +168,12 @@ namespace dsd
                                                                    int numSamples,
                                                                    const juce::AudioIODeviceCallbackContext& /*context*/)
     {
+        deviceCallbacks.fetch_add(1, std::memory_order_relaxed);
         if (inputChannelData == nullptr || numInputChannels <= 0 || numSamples <= 0)
             return;
 
         juce::ScopedNoDenormals noDenormals;
-
-        // Check if sample rate conversion is required
-        if (std::abs(deviceSampleRate - targetSampleRate) < 1.0)
-        {
-            // Same sample rate (e.g. 48 kHz native)
-            ringBuffer.write(inputChannelData, numInputChannels, numSamples);
-        }
-        else
-        {
-            // Resample from device native rate (e.g. 44.1 kHz, 16 kHz) to engine rate (48 kHz)
-            const double speedRatio = deviceSampleRate / targetSampleRate;
-            const int numProduced = std::min(kMaxResampleFrames,
-                                             static_cast<int>(std::round(static_cast<double>(numSamples) / speedRatio)));
-            if (numProduced > 0)
-            {
-                resampleBuffer.setSize(2, numProduced, false, false, true); // within preallocated capacity
-
-                for (int ch = 0; ch < 2; ++ch)
-                {
-                    const float* src = (ch < numInputChannels && inputChannelData[ch] != nullptr)
-                                       ? inputChannelData[ch]
-                                       : ((numInputChannels > 0 && inputChannelData[0] != nullptr) ? inputChannelData[0] : nullptr);
-
-                    if (src != nullptr)
-                    {
-                        interpolator[ch].process(speedRatio, src, resampleBuffer.getWritePointer(ch),
-                                                 numProduced, numSamples, 0);
-                    }
-                    else
-                    {
-                        resampleBuffer.clear(ch, 0, numProduced);
-                    }
-                }
-
-                ringBuffer.write(resampleBuffer.getArrayOfReadPointers(), 2, numProduced);
-            }
-        }
+        fifo.push(inputChannelData, numInputChannels, numSamples);
     }
 
     // =========================================================================
@@ -181,15 +183,20 @@ namespace dsd
         : devName(deviceName), devType(deviceType)
     {
         openDevice();
+        MultiDeviceManager::getInstance().registerBridge(this);
     }
 
     WindowsDeviceOutputSink::~WindowsDeviceOutputSink()
     {
+        MultiDeviceManager::getInstance().unregisterBridge(this);
         closeDevice();
     }
 
     bool WindowsDeviceOutputSink::openDevice()
     {
+        std::lock_guard<std::mutex> lock(deviceMutex);
+        blockEngineAccess();
+
         if (devType == nullptr || devName.isEmpty() || devName == "None")
             return false;
 
@@ -216,18 +223,14 @@ namespace dsd
                     if (deviceSampleRate <= 0.0)
                         deviceSampleRate = 48000.0;
 
-                    interpolator[0].reset();
-                    interpolator[1].reset();
-                    resampleBuffer.setSize(2, kMaxResampleFrames, false, true, false);
-
-                    ringBuffer.reset();
+                    // Engine (producer) rate -> device (consumer) rate, drift-corrected.
+                    fifo.prepare(targetSampleRate, deviceSampleRate, 2);
                     device->start(this);
-                    return true;
+                    streamRunning.store(device->isPlaying(), std::memory_order_seq_cst);
+                    return device->isPlaying();
                 }
-                else
-                {
-                    device.reset();
-                }
+
+                device.reset();
             }
         }
         catch (...)
@@ -240,20 +243,44 @@ namespace dsd
 
     void WindowsDeviceOutputSink::closeDevice()
     {
+        std::lock_guard<std::mutex> lock(deviceMutex);
+        blockEngineAccess();
         if (device != nullptr)
         {
             device->stop();
             device->close();
             device.reset();
         }
-        ringBuffer.reset();
+    }
+
+    bool WindowsDeviceOutputSink::reopenIfStopped()
+    {
+        const uint64_t callbacks = deviceCallbacks.load(std::memory_order_relaxed);
+        const bool stalled = callbacks == lastSeenCallbacks;
+        lastSeenCallbacks = callbacks;
+
+        if (isStreaming() && !stalled)
+            return true;
+
+        closeDevice();
+        const bool ok = openDevice();
+        if (ok)
+            reconnects.fetch_add(1, std::memory_order_relaxed);
+        lastSeenCallbacks = deviceCallbacks.load(std::memory_order_relaxed);
+        return ok;
     }
 
     void WindowsDeviceOutputSink::prepare(double sampleRate, int /*maxBlockSize*/)
     {
-        targetSampleRate = (sampleRate > 1000.0) ? sampleRate : 48000.0;
-        if (device == nullptr)
+        const double newRate = (sampleRate > 1000.0) ? sampleRate : 48000.0;
+        const bool rateChanged = std::abs(newRate - targetSampleRate) > 0.5;
+        targetSampleRate = newRate;
+
+        if (rateChanged || !isStreaming())
+        {
+            closeDevice();
             openDevice();
+        }
     }
 
     void WindowsDeviceOutputSink::releaseResources()
@@ -263,52 +290,25 @@ namespace dsd
 
     void WindowsDeviceOutputSink::writeBlock(const juce::AudioBuffer<float>& buffer, int numSamples)
     {
-        if (device == nullptr || !device->isPlaying() || numSamples <= 0)
+        if (numSamples <= 0 || !beginEngineAccess())
             return;
 
-        if (std::abs(deviceSampleRate - targetSampleRate) < 1.0)
-        {
-            ringBuffer.write(buffer.getArrayOfReadPointers(), buffer.getNumChannels(), numSamples);
-        }
-        else
-        {
-            // Resample from target engine rate (48 kHz) to device native rate (e.g. 44.1 kHz)
-            const double speedRatio = targetSampleRate / deviceSampleRate;
-            const int numProduced = std::min(kMaxResampleFrames,
-                                             static_cast<int>(std::round(static_cast<double>(numSamples) / speedRatio)));
-            if (numProduced > 0)
-            {
-                resampleBuffer.setSize(2, numProduced, false, false, true); // within preallocated capacity
-
-                for (int ch = 0; ch < 2; ++ch)
-                {
-                    const float* src = (ch < buffer.getNumChannels()) ? buffer.getReadPointer(ch) : nullptr;
-                    if (src != nullptr)
-                    {
-                        interpolator[ch].process(speedRatio, src, resampleBuffer.getWritePointer(ch),
-                                                 numProduced, numSamples, 0);
-                    }
-                    else
-                    {
-                        resampleBuffer.clear(ch, 0, numProduced);
-                    }
-                }
-
-                ringBuffer.write(resampleBuffer.getArrayOfReadPointers(), 2, numProduced);
-            }
-        }
+        fifo.push(buffer.getArrayOfReadPointers(), buffer.getNumChannels(), numSamples);
+        endEngineAccess();
     }
 
     void WindowsDeviceOutputSink::audioDeviceAboutToStart(juce::AudioIODevice* /*device*/)
     {
-        interpolator[0].reset();
-        interpolator[1].reset();
-        ringBuffer.reset();
     }
 
     void WindowsDeviceOutputSink::audioDeviceStopped()
     {
-        ringBuffer.reset();
+        streamRunning.store(false, std::memory_order_seq_cst);
+    }
+
+    void WindowsDeviceOutputSink::audioDeviceError(const juce::String& /*errorMessage*/)
+    {
+        streamRunning.store(false, std::memory_order_seq_cst);
     }
 
     void WindowsDeviceOutputSink::audioDeviceIOCallbackWithContext(const float* const* /*inputChannelData*/,
@@ -318,27 +318,19 @@ namespace dsd
                                                                   int numSamples,
                                                                   const juce::AudioIODeviceCallbackContext& /*context*/)
     {
-        if (outputChannelData != nullptr && numOutputChannels > 0 && numSamples > 0)
-        {
-            juce::ScopedNoDenormals noDenormals;
-            ringBuffer.read(outputChannelData, numOutputChannels, numSamples);
+        deviceCallbacks.fetch_add(1, std::memory_order_relaxed);
+        if (outputChannelData == nullptr || numOutputChannels <= 0 || numSamples <= 0)
+            return;
 
-            // Output limiting protection on dedicated DAC output
-            for (int ch = 0; ch < numOutputChannels; ++ch)
-            {
-                if (outputChannelData[ch] != nullptr)
-                {
-                    float* p = outputChannelData[ch];
-                    for (int i = 0; i < numSamples; ++i)
-                    {
-                        const float x = p[i];
-                        if (x > 0.988f)
-                            p[i] = 0.988f + 0.0119f * std::tanh((x - 0.988f) / 0.0119f);
-                        else if (x < -0.988f)
-                            p[i] = -0.988f + 0.0119f * std::tanh((x + 0.988f) / 0.0119f);
-                    }
-                }
-            }
+        juce::ScopedNoDenormals noDenormals;
+        fifo.pull(outputChannelData, numOutputChannels, numSamples);
+
+        // Output limiting protection on dedicated DAC output
+        for (int ch = 0; ch < numOutputChannels; ++ch)
+        {
+            if (float* p = outputChannelData[ch])
+                for (int i = 0; i < numSamples; ++i)
+                    p[i] = softClip(p[i]);
         }
     }
 
@@ -353,14 +345,148 @@ namespace dsd
 
     void MultiDeviceManager::initialize(juce::AudioDeviceManager& hostManager)
     {
-        std::lock_guard<std::mutex> lock(mutex);
-        juceManagerRef = &hostManager;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            juceManagerRef = &hostManager;
+        }
+        capturePreferredSetup();
+        hostManager.addChangeListener(this);
+        startTimer(2000);
     }
 
     void MultiDeviceManager::shutdown()
     {
+        stopTimer();
         std::lock_guard<std::mutex> lock(mutex);
+        if (juceManagerRef != nullptr)
+            juceManagerRef->removeChangeListener(this);
         juceManagerRef = nullptr;
+        havePreferredSetup = false;
+    }
+
+    void MultiDeviceManager::registerBridge(DeviceBridgeBase* bridge)
+    {
+        std::lock_guard<std::mutex> lock(bridgeMutex);
+        if (bridge != nullptr && std::find(bridges.begin(), bridges.end(), bridge) == bridges.end())
+            bridges.push_back(bridge);
+    }
+
+    void MultiDeviceManager::unregisterBridge(DeviceBridgeBase* bridge)
+    {
+        std::lock_guard<std::mutex> lock(bridgeMutex);
+        bridges.erase(std::remove(bridges.begin(), bridges.end(), bridge), bridges.end());
+    }
+
+    std::vector<DeviceBridgeStatus> MultiDeviceManager::getBridgeStatus() const
+    {
+        std::lock_guard<std::mutex> lock(bridgeMutex);
+        std::vector<DeviceBridgeStatus> out;
+        out.reserve(bridges.size());
+        for (const auto* b : bridges)
+        {
+            DeviceBridgeStatus st;
+            st.deviceName = b->getBridgeDeviceName();
+            st.isInput = dynamic_cast<const WindowsDeviceInputSource*>(b) != nullptr;
+            st.streaming = b->isStreaming();
+            st.driftPpm = b->getFifo().getCorrectionPpm();
+            st.bufferedMs = b->getFifo().getAverageFillMs();
+            st.underruns = b->getFifo().getUnderrunCount();
+            st.reconnects = b->getReconnectCount();
+            out.push_back(st);
+        }
+        return out;
+    }
+
+    void MultiDeviceManager::capturePreferredSetup()
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (juceManagerRef == nullptr || juceManagerRef->getCurrentAudioDevice() == nullptr)
+            return;
+
+        preferredSetup = juceManagerRef->getAudioDeviceSetup();
+        preferredTypeName = juceManagerRef->getCurrentAudioDeviceType();
+        havePreferredSetup = true;
+    }
+
+    juce::String MultiDeviceManager::getPreferredPrimaryDeviceName() const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!havePreferredSetup)
+            return {};
+        return preferredSetup.outputDeviceName.isNotEmpty() ? preferredSetup.outputDeviceName : preferredSetup.inputDeviceName;
+    }
+
+    bool MultiDeviceManager::isDeviceNamePresent(const juce::String& name) const
+    {
+        if (juceManagerRef == nullptr || name.isEmpty())
+            return false;
+
+        for (auto* type : juceManagerRef->getAvailableDeviceTypes())
+        {
+            if (type == nullptr || (preferredTypeName.isNotEmpty() && type->getTypeName() != preferredTypeName))
+                continue;
+            if (type->getDeviceNames(false).contains(name) || type->getDeviceNames(true).contains(name))
+                return true;
+        }
+        return false;
+    }
+
+    void MultiDeviceManager::changeListenerCallback(juce::ChangeBroadcaster* /*source*/)
+    {
+        // A device change we did not cause: if the preferred device is still
+        // present, the user chose a new device -> make it the preferred one.
+        // If it vanished, this is JUCE's fallback -> keep the old preference.
+        bool shouldCapture = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (juceManagerRef == nullptr || juceManagerRef->getCurrentAudioDevice() == nullptr || restoringPrimary)
+                return;
+
+            const juce::String preferredName = preferredSetup.outputDeviceName.isNotEmpty()
+                                             ? preferredSetup.outputDeviceName : preferredSetup.inputDeviceName;
+            shouldCapture = !havePreferredSetup || isDeviceNamePresent(preferredName);
+        }
+
+        if (shouldCapture)
+            capturePreferredSetup();
+    }
+
+    void MultiDeviceManager::timerCallback()
+    {
+        runRecoveryPass();
+    }
+
+    void MultiDeviceManager::runRecoveryPass()
+    {
+        // 1. Secondary device bridges: reopen any that stopped or stalled.
+        {
+            std::lock_guard<std::mutex> lock(bridgeMutex);
+            for (auto* b : bridges)
+                if (b != nullptr)
+                    b->reopenIfStopped();
+        }
+
+        // 2. Primary device: return to the user's device once it is back.
+        std::lock_guard<std::mutex> lock(mutex);
+        if (juceManagerRef == nullptr || !havePreferredSetup)
+            return;
+
+        const juce::String preferredName = preferredSetup.outputDeviceName.isNotEmpty()
+                                         ? preferredSetup.outputDeviceName : preferredSetup.inputDeviceName;
+        auto* current = juceManagerRef->getCurrentAudioDevice();
+        const juce::String currentName = (current != nullptr) ? current->getName() : juce::String();
+
+        if (currentName == preferredName || !isDeviceNamePresent(preferredName))
+            return;
+
+        restoringPrimary = true;
+        if (preferredTypeName.isNotEmpty() && juceManagerRef->getCurrentAudioDeviceType() != preferredTypeName)
+            juceManagerRef->setCurrentAudioDeviceType(preferredTypeName, false);
+        const auto err = juceManagerRef->setAudioDeviceSetup(preferredSetup, true);
+        restoringPrimary = false;
+
+        if (err.isEmpty() && juceManagerRef->getCurrentAudioDevice() != nullptr)
+            primaryRecoveries.fetch_add(1, std::memory_order_relaxed);
     }
 
     juce::String MultiDeviceManager::getPrimaryInputDeviceName() const

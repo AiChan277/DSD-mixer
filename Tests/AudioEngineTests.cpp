@@ -21,6 +21,7 @@
 #include <thread>
 #include "Audio/AudioEngine.h"
 #include "Audio/BlockTimingHistogram.h"
+#include "Audio/AdaptiveResamplingFifo.h"
 
 class MockAudioPluginInstance : public juce::AudioPluginInstance
 {
@@ -808,6 +809,141 @@ void testPluginDelayCompensation()
     CHECK(engine.getChannelManager().getChannel(1)->getCompensationDelaySamples() == 0);
 
     std::cout << "[PASS] PDC aligned impulses (off: " << off.size() << " peaks, on: " << on.size() << " peak)." << std::endl;
+}
+
+// Simulates two free-running clocks and checks the adaptive FIFO keeps the
+// fill at its target, tracks the drift and never produces a discontinuity.
+static void runFifoDriftSimulation(double producerRate, double consumerRate, double driftPpm,
+                                   int pushFrames, int pullFrames, double seconds,
+                                   double& meanCorrectionPpm, double& correctionSpreadPpm, double& maxFillError,
+                                   uint64_t& underrunsAfterStart, float& maxStep)
+{
+    dsd::AdaptiveResamplingFifo fifo;
+    fifo.prepare(producerRate, consumerRate, 2, 32768);
+
+    const double actualProducerRate = producerRate * (1.0 + driftPpm * 1.0e-6);
+    const double toneHz = 997.0;
+    double phase = 0.0;
+    const double phaseInc = 2.0 * 3.14159265358979323846 * toneHz / actualProducerRate;
+
+    std::vector<float> inL(static_cast<size_t>(pushFrames)), inR(static_cast<size_t>(pushFrames));
+    std::vector<float> outL(static_cast<size_t>(pullFrames)), outR(static_cast<size_t>(pullFrames));
+    const float* inPtrs[2] = { inL.data(), inR.data() };
+    float* outPtrs[2] = { outL.data(), outR.data() };
+
+    double tProducer = 0.0, tConsumer = 0.0, tProducerNominal = 0.0;
+    const double pushPeriod = pushFrames / actualProducerRate;
+    const double pullPeriod = pullFrames / consumerRate;
+
+    uint64_t underrunsAtStart = 0;
+    bool started = false;
+    double corrSum = 0.0, corrMin = 1.0e9, corrMax = -1.0e9;
+    long corrCount = 0;
+    maxFillError = 0.0;
+    float prev = 0.0f;
+    maxStep = 0.0f;
+    uint32_t jitterSeed = 12345;
+
+    while (tConsumer < seconds)
+    {
+        if (tProducer <= tConsumer)
+        {
+            for (int i = 0; i < pushFrames; ++i)
+            {
+                inL[static_cast<size_t>(i)] = inR[static_cast<size_t>(i)] = static_cast<float>(0.5 * std::sin(phase));
+                phase += phaseInc;
+            }
+            fifo.push(inPtrs, 2, pushFrames);
+            // Bounded +-1 ms delivery jitter around the producer's true clock,
+            // like WASAPI event timing (jitter does not accumulate).
+            jitterSeed = jitterSeed * 1664525u + 1013904223u;
+            const double jitter = ((jitterSeed >> 8) / 16777216.0 - 0.5) * 0.002;
+            tProducerNominal += pushPeriod;
+            tProducer = tProducerNominal + jitter;
+        }
+        else
+        {
+            fifo.pull(outPtrs, 2, pullFrames);
+            tConsumer += pullPeriod;
+            if (!started && tConsumer > 2.0)
+            {
+                started = true;
+                underrunsAtStart = fifo.getUnderrunCount();
+                prev = outL[0];
+            }
+            if (tConsumer > seconds * 0.5)
+            {
+                const double c = fifo.getCorrectionPpm();
+                corrSum += c;
+                ++corrCount;
+                corrMin = std::min(corrMin, c);
+                corrMax = std::max(corrMax, c);
+                maxFillError = std::max(maxFillError, std::abs(fifo.getAverageFillFrames() - fifo.getTargetFillFrames()));
+            }
+            if (started)
+            {
+                for (int i = 0; i < pullFrames; ++i)
+                {
+                    maxStep = std::max(maxStep, std::abs(outL[static_cast<size_t>(i)] - prev));
+                    prev = outL[static_cast<size_t>(i)];
+                }
+            }
+        }
+    }
+
+    meanCorrectionPpm = corrCount > 0 ? corrSum / corrCount : 0.0;
+    correctionSpreadPpm = corrMax - corrMin;
+    underrunsAfterStart = fifo.getUnderrunCount() - underrunsAtStart;
+}
+
+void testAdaptiveResamplingFifo()
+{
+    std::cout << "[TEST] Running Adaptive drift-correcting FIFO tests..." << std::endl;
+
+    // Max sample-to-sample change of a 0.5-amplitude 997 Hz tone at 48 kHz is ~0.065.
+    const float continuityLimit = 0.075f;
+
+    struct Case { double pRate, cRate, ppm; int push, pull; const char* name; };
+    const Case cases[] = {
+        { 48000.0, 48000.0,  300.0, 480, 128, "48k->48k, producer +300 ppm" },
+        { 48000.0, 48000.0, -250.0, 480, 128, "48k->48k, producer -250 ppm" },
+        { 44100.0, 48000.0,   80.0, 441, 256, "44.1k->48k, +80 ppm" },
+        { 48000.0, 44100.0, -120.0, 128, 441, "48k->44.1k, -120 ppm" },
+    };
+
+    for (const auto& c : cases)
+    {
+        double corr = 0.0, spread = 0.0, fillErr = 0.0;
+        uint64_t underruns = 0;
+        float maxStep = 0.0f;
+        runFifoDriftSimulation(c.pRate, c.cRate, c.ppm, c.push, c.pull, 120.0, corr, spread, fillErr, underruns, maxStep);
+
+        std::cout << "  " << c.name << ": mean correction " << corr << " ppm (spread " << spread
+                  << "), max fill error " << fillErr << " frames, underruns " << underruns
+                  << ", max step " << maxStep << std::endl;
+
+        CHECK(std::abs(corr - c.ppm) < 15.0);  // tracked the clock difference
+        CHECK(spread < 120.0);                 // ratio wobble < 0.2 cents
+        CHECK(fillErr < 48.0);                 // latency held at target (within 1 ms)
+        CHECK(underruns == 0);
+        CHECK(maxStep < continuityLimit);      // no clicks / sample drops
+    }
+
+    // Producer stops: consumer fades to silence, then re-primes when data returns.
+    dsd::AdaptiveResamplingFifo fifo;
+    fifo.prepare(48000.0, 48000.0);
+    std::vector<float> in(480, 0.25f), out(128, 1.0f);
+    const float* ip[1] = { in.data() };
+    float* op[1] = { out.data() };
+    for (int i = 0; i < 4; ++i) fifo.push(ip, 1, 480);
+    for (int i = 0; i < 40; ++i) fifo.pull(op, 1, 128);
+    CHECK(fifo.getUnderrunCount() >= 1);
+    CHECK(out[127] == 0.0f);
+    for (int i = 0; i < 6; ++i) fifo.push(ip, 1, 480);
+    for (int i = 0; i < 4; ++i) fifo.pull(op, 1, 128);
+    CHECK(std::abs(out[127] - 0.25f) < 1.0e-4f);
+
+    std::cout << "[PASS] Adaptive FIFO held latency and tracked drift without discontinuities." << std::endl;
 }
 
 void testDeviceEnumeration()
@@ -1764,6 +1900,7 @@ int main()
     testLatencyPluginBypassDoesNotCombFilter();
     testPluginRackConcurrentMutation();
     testPluginDelayCompensation();
+    testAdaptiveResamplingFifo();
     testPerformanceTelemetryAndOverrun();
     testLowLatencyCaptureFifo();
     testWindowAudioCapture();
