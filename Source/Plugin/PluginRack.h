@@ -74,6 +74,7 @@ namespace dsd
     private:
         std::vector<std::unique_ptr<PluginSlot>> slots;
         mutable std::mutex rackMutex; // Lock for UI mutations; audio thread uses try_lock
+        std::atomic<int> pluginCount{0}; // Mirrors slots.size() for lock-free UI reads
 
         double currentSampleRate{48000.0};
         int currentBlockSize{128};

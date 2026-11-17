@@ -3,6 +3,13 @@
 
 namespace dsd
 {
+    namespace
+    {
+        // Resample scratch is allocated once when a device opens; the device
+        // callbacks only ever shrink/grow within this capacity (no allocation).
+        constexpr int kMaxResampleFrames = 32768;
+    }
+
     // =========================================================================
     // WindowsDeviceInputSource
     // =========================================================================
@@ -48,6 +55,7 @@ namespace dsd
 
                     interpolator[0].reset();
                     interpolator[1].reset();
+                    resampleBuffer.setSize(2, kMaxResampleFrames, false, true, false);
 
                     ringBuffer.reset();
                     device->start(this);
@@ -126,6 +134,8 @@ namespace dsd
         if (inputChannelData == nullptr || numInputChannels <= 0 || numSamples <= 0)
             return;
 
+        juce::ScopedNoDenormals noDenormals;
+
         // Check if sample rate conversion is required
         if (std::abs(deviceSampleRate - targetSampleRate) < 1.0)
         {
@@ -136,10 +146,11 @@ namespace dsd
         {
             // Resample from device native rate (e.g. 44.1 kHz, 16 kHz) to engine rate (48 kHz)
             const double speedRatio = deviceSampleRate / targetSampleRate;
-            const int numProduced = static_cast<int>(std::round(static_cast<double>(numSamples) / speedRatio));
+            const int numProduced = std::min(kMaxResampleFrames,
+                                             static_cast<int>(std::round(static_cast<double>(numSamples) / speedRatio)));
             if (numProduced > 0)
             {
-                resampleBuffer.setSize(2, numProduced, false, false, true);
+                resampleBuffer.setSize(2, numProduced, false, false, true); // within preallocated capacity
 
                 for (int ch = 0; ch < 2; ++ch)
                 {
@@ -207,6 +218,7 @@ namespace dsd
 
                     interpolator[0].reset();
                     interpolator[1].reset();
+                    resampleBuffer.setSize(2, kMaxResampleFrames, false, true, false);
 
                     ringBuffer.reset();
                     device->start(this);
@@ -262,10 +274,11 @@ namespace dsd
         {
             // Resample from target engine rate (48 kHz) to device native rate (e.g. 44.1 kHz)
             const double speedRatio = targetSampleRate / deviceSampleRate;
-            const int numProduced = static_cast<int>(std::round(static_cast<double>(numSamples) / speedRatio));
+            const int numProduced = std::min(kMaxResampleFrames,
+                                             static_cast<int>(std::round(static_cast<double>(numSamples) / speedRatio)));
             if (numProduced > 0)
             {
-                resampleBuffer.setSize(2, numProduced, false, false, true);
+                resampleBuffer.setSize(2, numProduced, false, false, true); // within preallocated capacity
 
                 for (int ch = 0; ch < 2; ++ch)
                 {
@@ -307,6 +320,7 @@ namespace dsd
     {
         if (outputChannelData != nullptr && numOutputChannels > 0 && numSamples > 0)
         {
+            juce::ScopedNoDenormals noDenormals;
             ringBuffer.read(outputChannelData, numOutputChannels, numSamples);
 
             // Output limiting protection on dedicated DAC output

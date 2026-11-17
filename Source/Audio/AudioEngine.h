@@ -9,6 +9,7 @@
 #include "Bus/BusManager.h"
 #include "Output/OutputManager.h"
 #include "Audio/WindowAudioCapture.h"
+#include "Audio/BlockTimingHistogram.h"
 #include <memory>
 #include <vector>
 
@@ -46,6 +47,9 @@ namespace dsd
         const OutputManager& getOutputManager() const noexcept { return outputManager; }
 
         EnginePerformanceStats& getPerformanceStats() noexcept { return perfStats; }
+
+        // Distribution of callback processing time vs. deadline (p95 / p99).
+        const BlockTimingHistogram& getBlockTimingHistogram() const noexcept { return blockTimingHistogram; }
         const EnginePerformanceStats& getPerformanceStats() const noexcept { return perfStats; }
 
         double getCurrentSampleRate() const noexcept { return currentSampleRate; }
@@ -63,7 +67,11 @@ namespace dsd
         int getMaxWorkerCount() const noexcept { return dspScheduler.getMaxWorkers(); }
         float getSchedulerEmaLoad() const noexcept { return dspScheduler.getEmaLoadRatio(); }
 
-        void resetPerformanceMetrics() noexcept { perfStats.resetMetrics(); }
+        void resetPerformanceMetrics() noexcept
+        {
+            perfStats.resetMetrics();
+            blockTimingHistogram.reset();
+        }
 
     private:
         ChannelManager channelManager;
@@ -73,6 +81,7 @@ namespace dsd
         OutputManager  outputManager;
 
         EnginePerformanceStats perfStats;
+        BlockTimingHistogram blockTimingHistogram;
 
         double currentSampleRate{DEFAULT_SAMPLE_RATE};
         int currentBlockSize{DEFAULT_BUFFER_SIZE};

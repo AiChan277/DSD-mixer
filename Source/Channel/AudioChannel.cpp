@@ -29,6 +29,9 @@ namespace dsd
         faderProcessor.prepare(sampleRate);
         faderProcessor.reset(GainProcessor::dbToLinear(faderDb.load()));
 
+        panProcessor.setPan(pan.load(std::memory_order_relaxed));
+        panProcessor.snapToTarget();
+
         hpfFilter.prepare(sampleRate);
         hpfFilter.setCutoffHz(80.0);
         hpfFilter.setBypassed(!hpfEnabled.load(std::memory_order_relaxed));

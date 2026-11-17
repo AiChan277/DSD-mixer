@@ -67,6 +67,10 @@ namespace dsd
         if (numSamples <= 0)
             return;
 
+        // Flush denormals to zero for this callback. Decaying filter states
+        // and plugin tails otherwise hit the slow denormal path on silence.
+        juce::ScopedNoDenormals noDenormals;
+
         if (tempInputBuffer.getNumSamples() < numSamples)
             tempInputBuffer.setSize(std::max(2, std::max(numInputChannels, tempInputBuffer.getNumChannels())), numSamples, false, true, true);
 
@@ -125,6 +129,7 @@ namespace dsd
         perfStats.cpuLoadPercent.store(currentLoad, std::memory_order_relaxed);
         perfStats.deadlineMs.store(deadlineMs, std::memory_order_relaxed);
         perfStats.currentHeadroomMs.store(headroomMs, std::memory_order_relaxed);
+        blockTimingHistogram.record(elapsedSec, deadlineSec);
 
         // Rolling EMA smoothing (~250 ms window): alpha = 0.05
         float prevAvgLoad = perfStats.avgLoadPercent.load(std::memory_order_relaxed);

@@ -34,5 +34,15 @@ namespace dsd
 
     private:
         RouteMatrixCell matrix[NUM_CHANNELS_LEVEL1][NUM_OUTPUT_BUSES_LEVEL1];
+
+        // Audio-thread-only smoothing state for each send. Level changes ramp
+        // across one block; a route that (re)activates starts at its target, so
+        // ON/OFF, solo and enable keep their immediate behaviour.
+        struct SendSmoothingState
+        {
+            float appliedGain{0.0f};
+            bool activeLastBlock{false};
+        };
+        SendSmoothingState sendState[NUM_CHANNELS_LEVEL1][NUM_OUTPUT_BUSES_LEVEL1];
     };
 } // namespace dsd

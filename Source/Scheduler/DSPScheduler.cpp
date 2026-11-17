@@ -1,9 +1,77 @@
 #include "Scheduler/DSPScheduler.h"
 #include "Channel/ChannelManager.h"
 #include <juce_core/juce_core.h>
+#include <algorithm>
+
+#if defined(_WIN32)
+ #ifndef NOMINMAX
+  #define NOMINMAX
+ #endif
+ #ifndef WIN32_LEAN_AND_MEAN
+  #define WIN32_LEAN_AND_MEAN
+ #endif
+ #include <windows.h>
+ #include <avrt.h>
+#endif
+
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
+ #include <immintrin.h>
+ #define DSD_CPU_PAUSE() _mm_pause()
+#else
+ #define DSD_CPU_PAUSE() std::this_thread::yield()
+#endif
 
 namespace dsd
 {
+    namespace
+    {
+        // Gives a DSP worker the same scheduling class as the audio callback
+        // thread and flushes denormals for its whole lifetime.
+        struct WorkerRealtimeScope
+        {
+            WorkerRealtimeScope() noexcept
+            {
+                juce::FloatVectorOperations::disableDenormalisedNumberSupport(true);
+               #if defined(_WIN32)
+                DWORD taskIndex = 0;
+                task = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
+                if (task != nullptr)
+                    AvSetMmThreadPriority(task, AVRT_PRIORITY_HIGH);
+                else
+                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+               #endif
+            }
+
+            ~WorkerRealtimeScope() noexcept
+            {
+               #if defined(_WIN32)
+                if (task != nullptr)
+                    AvRevertMmThreadCharacteristics(task);
+               #endif
+            }
+
+           #if defined(_WIN32)
+            HANDLE task{nullptr};
+           #endif
+        };
+
+        // Spins briefly, then yields: used only while workers finish channels
+        // they have already claimed, so the wait is bounded by one channel's DSP.
+        constexpr int kSpinsBeforeYield = 2048;
+    } // namespace
+
+    static void signalWorker(void* wakeEvent, juce::WaitableEvent* fallback) noexcept
+    {
+       #if defined(_WIN32)
+        juce::ignoreUnused(fallback);
+        if (wakeEvent != nullptr)
+            SetEvent(static_cast<HANDLE>(wakeEvent));
+       #else
+        juce::ignoreUnused(wakeEvent);
+        fallback->signal();
+       #endif
+    }
+
     DSPScheduler::DSPScheduler()
     {
         startWorkers(8);
@@ -28,27 +96,36 @@ namespace dsd
 
         maxWorkers.store(numThreads, std::memory_order_relaxed);
         activeWorkerCount.store(std::min(4, numThreads), std::memory_order_relaxed);
-        shouldExit.store(false);
+        shouldExit.store(false, std::memory_order_release);
 
-        workers.reserve(numThreads);
+        workers.reserve(static_cast<size_t>(numThreads));
         for (int i = 0; i < numThreads; ++i)
         {
             auto worker = std::make_unique<WorkerData>();
-            worker->threadHandle = std::thread(&DSPScheduler::workerLoop, this, i);
+           #if defined(_WIN32)
+            worker->wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr); // auto-reset
+           #endif
             workers.push_back(std::move(worker));
         }
+
+        // Start threads only after the vector is complete: workerLoop indexes it.
+        for (int i = 0; i < numThreads; ++i)
+            workers[static_cast<size_t>(i)]->threadHandle = std::thread(&DSPScheduler::workerLoop, this, i);
     }
 
     void DSPScheduler::stopWorkers()
     {
-        shouldExit.store(true);
+        shouldExit.store(true, std::memory_order_release);
         for (auto& w : workers)
         {
             if (w != nullptr)
             {
-                std::lock_guard<std::mutex> lock(w->mutex);
-                w->workReady.store(true, std::memory_order_release);
-                w->cv.notify_one();
+                w->wakeGeneration.fetch_add(1, std::memory_order_release);
+               #if defined(_WIN32)
+                signalWorker(w->wakeEvent, nullptr);
+               #else
+                signalWorker(nullptr, &w->fallbackEvent);
+               #endif
             }
         }
 
@@ -56,6 +133,13 @@ namespace dsd
         {
             if (w != nullptr && w->threadHandle.joinable())
                 w->threadHandle.join();
+           #if defined(_WIN32)
+            if (w != nullptr && w->wakeEvent != nullptr)
+            {
+                CloseHandle(static_cast<HANDLE>(w->wakeEvent));
+                w->wakeEvent = nullptr;
+            }
+           #endif
         }
         workers.clear();
     }
@@ -63,8 +147,20 @@ namespace dsd
     const WorkerThreadStats* DSPScheduler::getWorkerStats(int index) const noexcept
     {
         if (index >= 0 && index < static_cast<int>(workers.size()))
-            return &workers[index]->stats;
+            return &workers[static_cast<size_t>(index)]->stats;
         return nullptr;
+    }
+
+    int DSPScheduler::getLastBlockTaskTotal() const noexcept
+    {
+        const uint32_t generation = lastCompletedGeneration.load(std::memory_order_acquire);
+        int total = callerTasksLastBlock.load(std::memory_order_relaxed);
+        for (const auto& w : workers)
+        {
+            if (w != nullptr && w->statsGeneration.load(std::memory_order_acquire) == generation)
+                total += w->tasksThisBlock.load(std::memory_order_relaxed);
+        }
+        return total;
     }
 
     void DSPScheduler::setManualWorkerCount(int count) noexcept
@@ -158,18 +254,60 @@ namespace dsd
         activeWorkerCount.store(targetWorkers, std::memory_order_relaxed);
     }
 
+    int DSPScheduler::runTasks(uint32_t generation, std::atomic<int>* perWorkerCounter) noexcept
+    {
+        int done = 0;
+        uint64_t word = claimWord.load(std::memory_order_acquire);
+
+        while (true)
+        {
+            if (static_cast<uint32_t>(word >> 32) != generation)
+                break; // A newer block has been published: nothing of ours is left.
+
+            const uint32_t taskCount = static_cast<uint32_t>((word >> 16) & 0xFFFFu);
+            const uint32_t index = static_cast<uint32_t>(word & 0xFFFFu);
+            if (index >= taskCount)
+                break;
+
+            // Claim exactly one channel. On failure `word` is refreshed and we retry.
+            if (!claimWord.compare_exchange_weak(word, word + 1,
+                                                 std::memory_order_acq_rel,
+                                                 std::memory_order_acquire))
+                continue;
+
+            if (auto* ch = currentChannelManager->getChannel(static_cast<int>(index)))
+                ch->processBlock(*currentInputBuffer, currentNumSamples.load(std::memory_order_relaxed));
+
+            ++done;
+            if (perWorkerCounter != nullptr)
+                perWorkerCounter->store(done, std::memory_order_relaxed);
+
+            // Release: publishes this channel's buffers to the audio thread.
+            tasksRemaining.fetch_sub(1, std::memory_order_acq_rel);
+            word = claimWord.load(std::memory_order_acquire);
+        }
+
+        return done;
+    }
+
     void DSPScheduler::processChannelsParallel(ChannelManager& channelManager,
                                               const juce::AudioBuffer<float>& deviceInputBuffer,
                                               int numSamples)
     {
-        const int totalChannels = channelManager.getNumChannels();
+        const int totalChannels = std::min(channelManager.getNumChannels(), 0xFFFF);
         if (totalChannels <= 0)
             return;
+
+        if (++blockGeneration == 0)
+            ++blockGeneration; // 0 is the workers' initial "already seen" value
+        const uint32_t generation = blockGeneration;
 
         // Fallback to single-thread serial if parallel disabled or workers empty
         if (!parallelEnabled.load(std::memory_order_relaxed) || workers.empty())
         {
             channelManager.processChannels(deviceInputBuffer, numSamples);
+            callerTasksLastBlock.store(totalChannels, std::memory_order_relaxed);
+            lastCompletedGeneration.store(generation, std::memory_order_release);
             return;
         }
 
@@ -178,112 +316,105 @@ namespace dsd
 
         currentChannelManager = &channelManager;
         currentInputBuffer = &deviceInputBuffer;
-        currentNumSamples = numSamples;
+        currentNumSamples.store(numSamples, std::memory_order_relaxed);
 
-        nextChannelIndex.store(0, std::memory_order_relaxed);
         tasksRemaining.store(totalChannels, std::memory_order_relaxed);
+        // Release: block parameters above become visible to whoever claims a task.
+        claimWord.store(packClaim(generation, static_cast<uint32_t>(totalChannels), 0), std::memory_order_release);
 
         // Mark active workers and parked workers
         for (int i = 0; i < numActive; ++i)
-        {
-            workers[i]->stats.isParked.store(false, std::memory_order_relaxed);
-        }
+            workers[static_cast<size_t>(i)]->stats.isParked.store(false, std::memory_order_relaxed);
+
         for (int i = numActive; i < numAvailableWorkers; ++i)
         {
-            workers[i]->stats.isParked.store(true, std::memory_order_relaxed);
-            workers[i]->stats.workerUtilizationPercent.store(0.0f, std::memory_order_relaxed);
-            workers[i]->stats.cpuLoadPercent.store(0.0f, std::memory_order_relaxed);
-            workers[i]->stats.busyTimeMs.store(0.0, std::memory_order_relaxed);
-            workers[i]->stats.tasksAssigned.store(0, std::memory_order_relaxed);
+            auto& stats = workers[static_cast<size_t>(i)]->stats;
+            stats.isParked.store(true, std::memory_order_relaxed);
+            stats.workerUtilizationPercent.store(0.0f, std::memory_order_relaxed);
+            stats.cpuLoadPercent.store(0.0f, std::memory_order_relaxed);
+            stats.busyTimeMs.store(0.0, std::memory_order_relaxed);
+            stats.tasksAssigned.store(0, std::memory_order_relaxed);
         }
 
-        // Targeted wakeup: Signal ONLY the active workers
+        // Targeted wakeup of the active workers only (no mutex involved).
         for (int i = 0; i < numActive; ++i)
         {
-            std::lock_guard<std::mutex> lock(workers[i]->mutex);
-            workers[i]->workReady.store(true, std::memory_order_release);
-            workers[i]->cv.notify_one();
+            auto& w = *workers[static_cast<size_t>(i)];
+            w.wakeGeneration.store(generation, std::memory_order_release);
+           #if defined(_WIN32)
+            signalWorker(w.wakeEvent, nullptr);
+           #else
+            signalWorker(nullptr, &w.fallbackEvent);
+           #endif
         }
 
-        // Deterministic completion barrier: wait for active workers to complete all ready channel tasks
-        std::unique_lock<std::mutex> lock(doneMutex);
-        cvDone.wait(lock, [this]() {
-            return tasksRemaining.load(std::memory_order_acquire) <= 0;
-        });
+        // The audio thread works too, so the block finishes even if workers are late.
+        callerTasksLastBlock.store(runTasks(generation, nullptr), std::memory_order_relaxed);
 
-        // Reset workReady on active workers
-        for (int i = 0; i < numActive; ++i)
+        // Every channel is claimed; wait only for ones still running on workers.
+        int spins = 0;
+        while (tasksRemaining.load(std::memory_order_acquire) > 0)
         {
-            workers[i]->workReady.store(false, std::memory_order_relaxed);
+            if (++spins < kSpinsBeforeYield)
+                DSD_CPU_PAUSE();
+            else
+                std::this_thread::yield();
         }
+
+        lastCompletedGeneration.store(generation, std::memory_order_release);
     }
 
     void DSPScheduler::workerLoop(int workerId)
     {
-        while (!shouldExit.load(std::memory_order_relaxed))
-        {
-            // Per-worker conditional wait: parked workers stay in low-power kernel wait
-            {
-                std::unique_lock<std::mutex> lock(workers[workerId]->mutex);
-                workers[workerId]->cv.wait(lock, [this, workerId]() {
-                    return workers[workerId]->workReady.load(std::memory_order_acquire) || shouldExit.load(std::memory_order_relaxed);
-                });
-            }
+        WorkerRealtimeScope realtimeScope;
+        auto& self = *workers[static_cast<size_t>(workerId)];
 
-            if (shouldExit.load(std::memory_order_relaxed))
+        uint32_t seen = 0;
+
+        while (true)
+        {
+           #if defined(_WIN32)
+            WaitForSingleObject(static_cast<HANDLE>(self.wakeEvent), INFINITE);
+           #else
+            self.fallbackEvent.wait(-1);
+           #endif
+
+            if (shouldExit.load(std::memory_order_acquire))
                 break;
 
+            const uint32_t generation = self.wakeGeneration.load(std::memory_order_acquire);
+            if (generation == seen)
+                continue; // spurious wakeup
+            seen = generation;
+
             const int64_t startTicks = juce::Time::getHighResolutionTicks();
-            int tasksDone = 0;
 
-            if (currentChannelManager != nullptr && currentInputBuffer != nullptr)
-            {
-                const int totalChannels = currentChannelManager->getNumChannels();
+            self.tasksThisBlock.store(0, std::memory_order_relaxed);
+            self.statsGeneration.store(generation, std::memory_order_release);
 
-                // Dynamic task queue: pull ready tasks atomically
-                while (true)
-                {
-                    int chIdx = nextChannelIndex.fetch_add(1, std::memory_order_relaxed);
-                    if (chIdx >= totalChannels)
-                        break;
-
-                    if (auto* ch = currentChannelManager->getChannel(chIdx))
-                    {
-                        ch->processBlock(*currentInputBuffer, currentNumSamples);
-                        tasksDone++;
-                    }
-
-                    int remaining = tasksRemaining.fetch_sub(1, std::memory_order_acq_rel) - 1;
-                    if (remaining <= 0)
-                    {
-                        std::lock_guard<std::mutex> doneLock(doneMutex);
-                        cvDone.notify_one();
-                    }
-                }
-            }
+            const int tasksDone = runTasks(generation, &self.tasksThisBlock);
 
             const int64_t endTicks = juce::Time::getHighResolutionTicks();
-            const double elapsedSec = juce::Time::highResolutionTicksToSeconds(endTicks - startTicks);
-            const double elapsedMs = elapsedSec * 1000.0;
-            const double deadlineSec = (currentNumSamples > 0 && currentSampleRate > 0.0)
-                                     ? (static_cast<double>(currentNumSamples) / currentSampleRate)
-                                     : 0.010;
-            const double deadlineMs = deadlineSec * 1000.0;
+            const double elapsedMs = juce::Time::highResolutionTicksToSeconds(endTicks - startTicks) * 1000.0;
+            const int numSamples = currentNumSamples.load(std::memory_order_relaxed);
+            const double deadlineMs = (numSamples > 0 && currentSampleRate > 0.0)
+                                    ? (static_cast<double>(numSamples) / currentSampleRate) * 1000.0
+                                    : 10.0;
 
-            workers[workerId]->stats.busyTimeMs.store(elapsedMs, std::memory_order_relaxed);
-            workers[workerId]->stats.tasksAssigned.store(tasksDone, std::memory_order_relaxed);
-            workers[workerId]->stats.blocksProcessed.fetch_add(tasksDone, std::memory_order_relaxed);
+            self.stats.busyTimeMs.store(elapsedMs, std::memory_order_relaxed);
+            self.stats.tasksAssigned.store(tasksDone, std::memory_order_relaxed);
+            self.stats.blocksProcessed.fetch_add(static_cast<uint32_t>(tasksDone), std::memory_order_relaxed);
 
             // Worker Utilization (%) = (Worker Busy Time / DSP Deadline) * 100
             float instantUtil = (deadlineMs > 0.0) ? static_cast<float>((elapsedMs / deadlineMs) * 100.0) : 0.0f;
             instantUtil = std::clamp(instantUtil, 0.0f, 100.0f);
 
             // Rolling EMA smoothing (~250ms window): alpha = 0.15
-            float prevUtil = workers[workerId]->stats.workerUtilizationPercent.load(std::memory_order_relaxed);
-            float smoothedUtil = (prevUtil <= 0.001f) ? instantUtil : (0.85f * prevUtil + 0.15f * instantUtil);
+            const float prevUtil = self.stats.workerUtilizationPercent.load(std::memory_order_relaxed);
+            const float smoothedUtil = (prevUtil <= 0.001f) ? instantUtil : (0.85f * prevUtil + 0.15f * instantUtil);
 
-            workers[workerId]->stats.workerUtilizationPercent.store(smoothedUtil, std::memory_order_relaxed);
-            workers[workerId]->stats.cpuLoadPercent.store(smoothedUtil, std::memory_order_relaxed);
+            self.stats.workerUtilizationPercent.store(smoothedUtil, std::memory_order_relaxed);
+            self.stats.cpuLoadPercent.store(smoothedUtil, std::memory_order_relaxed);
         }
     }
 } // namespace dsd

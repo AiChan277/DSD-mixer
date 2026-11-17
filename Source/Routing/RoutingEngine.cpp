@@ -92,6 +92,9 @@ namespace dsd
                                               OutputManager& outputManager,
                                               int numSamples)
     {
+        if (numSamples <= 0)
+            return;
+
         const int numOutputs = outputManager.getNumOutputs();
 
         // 1. Clear all output bus buffers
@@ -171,20 +174,31 @@ namespace dsd
                     else
                     {
                         // Normal Program Routing path:
-                        // Channel ON/OFF gate check (disableOutput == true excludes channel from program mix)
-                        if (ch->getDisableOutput())
+                        // Channel ON/OFF gate (disableOutput == true excludes channel from program mix),
+                        // solo filtering (if any channel is soloed, exclude non-solo channels) and
+                        // the matrix crosspoint itself all cut the route immediately.
+                        auto& smoothing = sendState[chIdx][outIdx];
+                        const bool routeActive = !ch->getDisableOutput()
+                                              && !(anySolo && !ch->getSolo())
+                                              && matrix[chIdx][outIdx].enabled.load(std::memory_order_relaxed);
+                        if (!routeActive)
+                        {
+                            smoothing.activeLastBlock = false;
                             continue;
-
-                        // Solo filtering: if any channel is soloed, exclude non-solo channels
-                        if (anySolo && !ch->getSolo())
-                            continue;
-
-                        if (!matrix[chIdx][outIdx].enabled.load(std::memory_order_relaxed))
-                            continue;
+                        }
 
                         const float sendGainDb = matrix[chIdx][outIdx].sendGainDb.load(std::memory_order_relaxed);
                         const float sendLinear = GainProcessor::dbToLinear(sendGainDb);
-                        if (sendLinear <= 0.0f)
+
+                        if (!smoothing.activeLastBlock)
+                        {
+                            smoothing.appliedGain = sendLinear;
+                            smoothing.activeLastBlock = true;
+                        }
+
+                        const float startGain = smoothing.appliedGain;
+                        smoothing.appliedGain = sendLinear;
+                        if (sendLinear <= 0.0f && startGain <= 0.0f)
                             continue;
 
                         const auto& chBuf = ch->getOutputBuffer();
@@ -195,10 +209,24 @@ namespace dsd
                         float* outWriteL = outBuf.getWritePointer(0);
                         float* outWriteR = outBuf.getWritePointer(1);
 
-                        for (int s = 0; s < numSamples; ++s)
+                        if (startGain == sendLinear)
                         {
-                            outWriteL[s] += chReadL[s] * sendLinear;
-                            outWriteR[s] += chReadR[s] * sendLinear;
+                            for (int s = 0; s < numSamples; ++s)
+                            {
+                                outWriteL[s] += chReadL[s] * sendLinear;
+                                outWriteR[s] += chReadR[s] * sendLinear;
+                            }
+                        }
+                        else
+                        {
+                            // Linear ramp to the new send level across this block.
+                            const float step = (sendLinear - startGain) / static_cast<float>(numSamples);
+                            for (int s = 0; s < numSamples; ++s)
+                            {
+                                const float g = startGain + step * static_cast<float>(s + 1);
+                                outWriteL[s] += chReadL[s] * g;
+                                outWriteR[s] += chReadR[s] * g;
+                            }
                         }
                     }
                 }

@@ -7,6 +7,19 @@
 
 namespace dsd
 {
+    // Bar chart of how many audio blocks fell into each load band
+    // (processing time as % of the block deadline). Bar height is log-scaled
+    // so a handful of slow blocks stays visible next to millions of fast ones.
+    class BlockTimingHistogramView : public juce::Component
+    {
+    public:
+        void setSnapshot(const BlockTimingHistogram::Snapshot& newSnapshot);
+        void paint(juce::Graphics& g) override;
+
+    private:
+        BlockTimingHistogram::Snapshot snapshot;
+    };
+
     class PerformanceMonitorDialog : public juce::Component, public juce::Timer
     {
     public:
@@ -57,5 +70,11 @@ namespace dsd
         juce::Label pathBreakdownLabel1;
         juce::Label pathBreakdownLabel2;
         juce::Label totalLatencyLabel;
+
+        // Panel 4: Block Timing Distribution
+        juce::Label timingSectionLabel;
+        juce::Label timingSummaryLabel;
+        BlockTimingHistogramView timingHistogramView;
+        int timingPanelDividerY{0};
     };
 } // namespace dsd

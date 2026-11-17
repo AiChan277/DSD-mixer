@@ -143,8 +143,10 @@ namespace dsd
 
     int PluginRack::getNumPlugins() const
     {
-        std::lock_guard<std::mutex> lock(rackMutex);
-        return static_cast<int>(slots.size());
+        // Lock-free: the UI polls this for every strip on its refresh timer.
+        // Taking rackMutex here made the audio thread's try_lock fail and
+        // skip the whole plugin chain for that block (audible dry pop).
+        return pluginCount.load(std::memory_order_acquire);
     }
 
     const PluginSlot* PluginRack::getSlot(int index) const
@@ -227,6 +229,7 @@ namespace dsd
 
         const PluginInstanceID assignedId = slot->instanceId;
         slots.push_back(std::move(slot));
+        pluginCount.store(static_cast<int>(slots.size()), std::memory_order_release);
         return assignedId;
     }
 
@@ -239,6 +242,7 @@ namespace dsd
             {
                 slotToDelete = std::move(slots[index]);
                 slots.erase(slots.begin() + index);
+                pluginCount.store(static_cast<int>(slots.size()), std::memory_order_release);
             }
         }
 
@@ -270,6 +274,7 @@ namespace dsd
                 {
                     slotToDelete = std::move(*it);
                     slots.erase(it);
+                    pluginCount.store(static_cast<int>(slots.size()), std::memory_order_release);
                     break;
                 }
             }
@@ -299,6 +304,7 @@ namespace dsd
             std::lock_guard<std::mutex> lock(rackMutex);
             toDelete = std::move(slots);
             slots.clear();
+            pluginCount.store(0, std::memory_order_release);
         }
 
         for (auto& slot : toDelete)
