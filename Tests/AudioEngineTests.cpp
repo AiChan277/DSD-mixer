@@ -86,6 +86,35 @@ public:
     float addend{0.0f};
 };
 
+// Pure delay line that reports its latency, like a look-ahead plugin.
+class MockDelayPlugin : public MockAudioPluginInstance
+{
+public:
+    explicit MockDelayPlugin(int delaySamples) : MockAudioPluginInstance("Delay", 1.0f), delay(delaySamples)
+    {
+        setLatencySamples(delaySamples);
+        line.assign(static_cast<size_t>(delaySamples) * 2, 0.0f);
+    }
+    void processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) override
+    {
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+        {
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                float& slot = line[static_cast<size_t>(pos * 2 + ch)];
+                const float in = buffer.getSample(ch, i);
+                buffer.setSample(ch, i, slot);
+                slot = in;
+            }
+            pos = (pos + 1) % delay;
+        }
+    }
+private:
+    int delay;
+    int pos{0};
+    std::vector<float> line;
+};
+
 void testGainProcessor()
 {
     std::cout << "[TEST] Running GainProcessor tests..." << std::endl;
@@ -554,6 +583,233 @@ void testPluginCountIsLockFree()
     std::cout << "[PASS] Lock-free plugin count tests passed (" << skippedBlocks << " skipped blocks)." << std::endl;
 }
 
+void testBypassCrossfadeIsClickFree()
+{
+    std::cout << "[TEST] Running click-free bypass (zero-latency crossfade) tests..." << std::endl;
+
+    dsd::PluginRack rack;
+    rack.prepare(48000.0, 128);
+    const auto id = rack.addPlugin(std::make_unique<MockAudioPluginInstance>("Gain2", 2.0f), "Gain2");
+
+    juce::AudioBuffer<float> buf(2, 128);
+    juce::MidiBuffer midi;
+    auto runBlock = [&]() {
+        for (int ch = 0; ch < 2; ++ch)
+            juce::FloatVectorOperations::fill(buf.getWritePointer(ch), 0.5f, 128);
+        rack.processBlock(buf, midi, 128);
+    };
+
+    runBlock();
+    CHECK(std::abs(buf.getSample(0, 127) - 1.0f) < 1.0e-5f);
+
+    rack.setBypassById(id, true);
+    float prev = 1.0f, maxJump = 0.0f, last = 0.0f;
+    int blocks = 0;
+    do
+    {
+        runBlock();
+        for (int i = 0; i < 128; ++i)
+        {
+            maxJump = std::max(maxJump, std::abs(buf.getSample(0, i) - prev));
+            prev = buf.getSample(0, i);
+        }
+        last = buf.getSample(0, 127);
+        ++blocks;
+    } while (rack.isBypassTransitionActive() && blocks < 20);
+
+    CHECK(maxJump < 0.01f);                         // a hard switch would jump by 0.5
+    CHECK(blocks >= 3 && blocks <= 5);              // 10 ms at 48 kHz = 480 samples
+    CHECK(std::abs(last - 0.5f) < 1.0e-5f);         // fully dry at the end
+
+    std::cout << "[PASS] Bypass crossfade max step " << maxJump << " over " << blocks << " blocks." << std::endl;
+}
+
+void testLatencyPluginBypassDoesNotCombFilter()
+{
+    std::cout << "[TEST] Running latency-plugin bypass (fade-out / switch / fade-in) tests..." << std::endl;
+
+    dsd::PluginRack rack;
+    rack.prepare(48000.0, 128);
+    const auto id = rack.addPlugin(std::make_unique<MockDelayPlugin>(64), "Delay64");
+    CHECK(rack.getPluginLatencySamples(id) == 64);
+
+    juce::AudioBuffer<float> buf(2, 128);
+    juce::MidiBuffer midi;
+    for (int b = 0; b < 4; ++b)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+            juce::FloatVectorOperations::fill(buf.getWritePointer(ch), 0.5f, 128);
+        rack.processBlock(buf, midi, 128);
+    }
+    CHECK(rack.getProcessingLatencySamples() == 64);
+
+    rack.setBypassById(id, true);
+    float maxOut = 0.0f, minOut = 1.0f, maxJump = 0.0f, prev = 0.5f;
+    for (int b = 0; b < 6; ++b)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+            juce::FloatVectorOperations::fill(buf.getWritePointer(ch), 0.5f, 128);
+        rack.processBlock(buf, midi, 128);
+        for (int i = 0; i < 128; ++i)
+        {
+            const float v = buf.getSample(0, i);
+            maxOut = std::max(maxOut, v);
+            minOut = std::min(minOut, v);
+            maxJump = std::max(maxJump, std::abs(v - prev));
+            prev = v;
+        }
+    }
+    CHECK(maxOut <= 0.5f + 1.0e-5f);  // never wet + dry summed (would reach 1.0)
+    CHECK(minOut < 0.01f);            // passed through silence at the switch point
+    CHECK(maxJump < 0.01f);           // and got there smoothly
+    CHECK(std::abs(prev - 0.5f) < 1.0e-5f);
+    CHECK(!rack.isBypassTransitionActive());
+    CHECK(rack.getProcessingLatencySamples() == 0);
+
+    std::cout << "[PASS] Latency-plugin bypass switched through silence without summing paths." << std::endl;
+}
+
+void testPluginRackConcurrentMutation()
+{
+    std::cout << "[TEST] Running plugin rack concurrent add/remove while processing..." << std::endl;
+
+    dsd::PluginRack rack;
+    rack.prepare(48000.0, 128);
+    rack.addPlugin(std::make_unique<MockAudioPluginInstance>("Gain2", 2.0f), "Gain2");
+
+    std::atomic<bool> stop{false};
+    std::atomic<int> wrongBlocks{0};
+    std::atomic<int> processed{0};
+
+    std::thread audio([&]() {
+        juce::AudioBuffer<float> buf(2, 128);
+        juce::MidiBuffer midi;
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            for (int ch = 0; ch < 2; ++ch)
+                juce::FloatVectorOperations::fill(buf.getWritePointer(ch), 0.25f, 128);
+            rack.processBlock(buf, midi, 128);
+            // Unity plugins come and go; the x2 plugin is always there.
+            if (std::abs(buf.getSample(0, 0) - 0.5f) > 1.0e-5f || std::abs(buf.getSample(1, 127) - 0.5f) > 1.0e-5f)
+                wrongBlocks.fetch_add(1);
+            processed.fetch_add(1);
+        }
+    });
+
+    for (int i = 0; i < 400; ++i)
+    {
+        const auto id = rack.addPlugin(std::make_unique<MockAudioPluginInstance>("Unity", 1.0f), "Unity");
+        if (i % 3 == 0)
+            rack.movePlugin(0, rack.getNumPlugins() - 1);
+        rack.removePluginById(id);
+    }
+    stop.store(true);
+    audio.join();
+
+    CHECK(wrongBlocks.load() == 0);
+    CHECK(processed.load() > 0);
+    CHECK(rack.getNumPlugins() == 1);
+
+    std::cout << "[PASS] " << processed.load() << " blocks processed during 400 add/move/remove cycles, "
+              << wrongBlocks.load() << " wrong." << std::endl;
+}
+
+// Emits a single unit impulse at sample 0 of the Nth block it is asked for.
+class ImpulseInputSource : public dsd::AudioInputSource
+{
+public:
+    explicit ImpulseInputSource(int blockIndex) : fireAt(blockIndex) {}
+    void prepare(double, int) override {}
+    void releaseResources() override {}
+    void readBlock(juce::AudioBuffer<float>& target, const juce::AudioBuffer<float>&, int numSamples) override
+    {
+        for (int ch = 0; ch < target.getNumChannels(); ++ch)
+            target.clear(ch, 0, numSamples);
+        if (calls++ == fireAt)
+            for (int ch = 0; ch < target.getNumChannels(); ++ch)
+                target.setSample(ch, 0, 1.0f);
+    }
+private:
+    int fireAt;
+    int calls{0};
+};
+
+// Runs CH1 (64-sample latency plugin) and CH2 (no plugin) into OUT 1 and
+// returns the sample offsets of every peak above `threshold`.
+static std::vector<int> runPdcScenario(bool pdcOn, float& tallestPeak)
+{
+    constexpr int block = 256;
+    dsd::AudioEngine engine;
+    engine.prepare(48000.0, block, 2);
+    engine.setPluginDelayCompensationEnabled(pdcOn);
+
+    auto& chMgr = engine.getChannelManager();
+    chMgr.getChannel(0)->setInputSource(std::make_unique<ImpulseInputSource>(20));
+    chMgr.getChannel(1)->setInputSource(std::make_unique<ImpulseInputSource>(20));
+    chMgr.getChannel(0)->getPluginRack().addPlugin(std::make_unique<MockDelayPlugin>(64), "Delay64");
+
+    juce::AudioBuffer<float> inBuf(2, block), outBuf(2, block);
+    inBuf.clear();
+    juce::AudioIODeviceCallbackContext ctx;
+
+    std::vector<int> peaks;
+    tallestPeak = 0.0f;
+    for (int b = 0; b < 24; ++b)
+    {
+        engine.audioDeviceIOCallbackWithContext(inBuf.getArrayOfReadPointers(), 2,
+                                                outBuf.getArrayOfWritePointers(), 2, block, ctx);
+        const auto& bus = engine.getOutputManager().getOutput(0)->getBuffer();
+        for (int i = 0; i < block; ++i)
+        {
+            const float v = std::abs(bus.getSample(0, i));
+            if (v > 0.2f)
+                peaks.push_back(b * block + i);
+            tallestPeak = std::max(tallestPeak, v);
+        }
+    }
+    return peaks;
+}
+
+void testPluginDelayCompensation()
+{
+    std::cout << "[TEST] Running Plugin Delay Compensation tests..." << std::endl;
+
+    float tallOff = 0.0f, tallOn = 0.0f;
+    const auto off = runPdcScenario(false, tallOff);
+    const auto on = runPdcScenario(true, tallOn);
+
+    // Without PDC the delayed channel arrives 64 samples after the dry one.
+    CHECK(off.size() == 2);
+    if (off.size() == 2)
+        CHECK(off[1] - off[0] == 64);
+
+    // With PDC both impulses land on the same sample and sum.
+    CHECK(on.size() == 1);
+    CHECK(tallOn > tallOff * 1.8f);
+    if (on.size() == 1 && off.size() == 2)
+        CHECK(on[0] == off[1]); // the dry channel was delayed to meet the slow one
+
+    // Compensation reported and cleared.
+    dsd::AudioEngine engine;
+    engine.prepare(48000.0, 256, 2);
+    engine.getChannelManager().getChannel(0)->getPluginRack().addPlugin(std::make_unique<MockDelayPlugin>(100), "Delay100");
+    juce::AudioBuffer<float> inBuf(2, 256), outBuf(2, 256);
+    inBuf.clear();
+    juce::AudioIODeviceCallbackContext ctx;
+    engine.setPluginDelayCompensationEnabled(true);
+    for (int b = 0; b < 3; ++b)
+        engine.audioDeviceIOCallbackWithContext(inBuf.getArrayOfReadPointers(), 2, outBuf.getArrayOfWritePointers(), 2, 256, ctx);
+    CHECK(engine.getCompensatedLatencySamples() == 100);
+    CHECK(engine.getChannelManager().getChannel(1)->getCompensationDelaySamples() == 100);
+    CHECK(engine.getChannelManager().getChannel(0)->getCompensationDelaySamples() == 0);
+    engine.setPluginDelayCompensationEnabled(false);
+    engine.audioDeviceIOCallbackWithContext(inBuf.getArrayOfReadPointers(), 2, outBuf.getArrayOfWritePointers(), 2, 256, ctx);
+    CHECK(engine.getCompensatedLatencySamples() == 0);
+    CHECK(engine.getChannelManager().getChannel(1)->getCompensationDelaySamples() == 0);
+
+    std::cout << "[PASS] PDC aligned impulses (off: " << off.size() << " peaks, on: " << on.size() << " peak)." << std::endl;
+}
+
 void testDeviceEnumeration()
 {
     std::cout << "[TEST] Enumerating Windows Audio Devices via JUCE..." << std::endl;
@@ -930,6 +1186,19 @@ void testPerformanceTelemetryAndOverrun()
     std::cout << "[PASS] Performance Telemetry, True Peak & Overrun tests passed cleanly." << std::endl;
 }
 
+// Bypass toggles crossfade over ~10 ms; run enough blocks for them to finish.
+static void settleBypassTransitions(dsd::PluginRack& rack)
+{
+    juce::AudioBuffer<float> b(2, 128);
+    juce::MidiBuffer m;
+    for (int i = 0; i < 8; ++i)
+    {
+        b.clear();
+        rack.processBlock(b, m, 128);
+    }
+    CHECK(!rack.isBypassTransitionActive());
+}
+
 void testVstBypassAndReorder()
 {
     std::cout << "[TEST] Running VST Bypass, Reorder & Processing Order tests..." << std::endl;
@@ -973,6 +1242,7 @@ void testVstBypassAndReorder()
     rack.setBypassById(idA, true);
     CHECK(rack.isBypassedById(idA) == true);
     CHECK(rack.isBypassedById(idB) == false);
+    settleBypassTransitions(rack);
 
     for (int ch = 0; ch < 2; ++ch)
         for (int i = 0; i < 128; ++i)
@@ -988,6 +1258,7 @@ void testVstBypassAndReorder()
     rack.setBypassById(idB, true);
     CHECK(rack.isBypassedById(idA) == true);
     CHECK(rack.isBypassedById(idB) == true);
+    settleBypassTransitions(rack);
 
     for (int ch = 0; ch < 2; ++ch)
         for (int i = 0; i < 128; ++i)
@@ -1003,6 +1274,7 @@ void testVstBypassAndReorder()
     rack.setBypassById(idA, false);
     CHECK(rack.isBypassedById(idA) == false);
     CHECK(rack.isBypassedById(idB) == true);
+    settleBypassTransitions(rack);
 
     for (int ch = 0; ch < 2; ++ch)
         for (int i = 0; i < 128; ++i)
@@ -1016,6 +1288,7 @@ void testVstBypassAndReorder()
 
     // 4. Unbypass B: both active again
     rack.setBypassById(idB, false);
+    settleBypassTransitions(rack);
 
     // 5. Test Reordering: Move B (currently at index 1) to target index 0
     bool moved = rack.movePluginById(idB, 0);
@@ -1487,6 +1760,10 @@ int main()
     testRouteSendLevelRamp();
     testBlockTimingHistogram();
     testPluginCountIsLockFree();
+    testBypassCrossfadeIsClickFree();
+    testLatencyPluginBypassDoesNotCombFilter();
+    testPluginRackConcurrentMutation();
+    testPluginDelayCompensation();
     testPerformanceTelemetryAndOverrun();
     testLowLatencyCaptureFifo();
     testWindowAudioCapture();

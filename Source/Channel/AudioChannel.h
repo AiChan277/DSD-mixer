@@ -7,6 +7,7 @@
 #include "DSP/PanProcessor.h"
 #include "DSP/MeterProcessor.h"
 #include "DSP/BiquadFilter.h"
+#include "DSP/CompensationDelay.h"
 #include "Plugin/PluginRack.h"
 #include <memory>
 #include <string>
@@ -83,6 +84,14 @@ namespace dsd
         void setInputSource(std::unique_ptr<AudioInputSource> source);
         AudioInputSource* getInputSource() const noexcept { return inputSource.get(); }
 
+        // Plugin delay compensation: extra delay applied right after the plugin
+        // rack so this channel lines up with slower (higher-latency) channels.
+        void setCompensationDelaySamples(int samples) noexcept
+        {
+            compensationTarget.store(std::clamp(samples, 0, CompensationDelay::kMaxDelaySamples), std::memory_order_relaxed);
+        }
+        int getCompensationDelaySamples() const noexcept { return compensationTarget.load(std::memory_order_relaxed); }
+
         PluginRack& getPluginRack() noexcept { return pluginRack; }
         const PluginRack& getPluginRack() const noexcept { return pluginRack; }
 
@@ -154,6 +163,8 @@ namespace dsd
         MeterValues meterValues; // Post-Fader
 
         PluginRack pluginRack;
+        CompensationDelay compensationDelay;
+        std::atomic<int> compensationTarget{0};
 
         std::unique_ptr<AudioInputSource> inputSource;
         mutable std::mutex sourceMutex;

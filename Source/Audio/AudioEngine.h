@@ -60,6 +60,12 @@ namespace dsd
         double getDspBlockMs() const noexcept;
         double getDspExecutionTimeMs() const noexcept { return perfStats.processingTimeMs.load(std::memory_order_relaxed); }
 
+        // Plugin delay compensation across all channels (off by default: it
+        // adds the largest plugin latency to every channel).
+        void setPluginDelayCompensationEnabled(bool enabled) noexcept { pdcEnabled.store(enabled, std::memory_order_relaxed); }
+        bool isPluginDelayCompensationEnabled() const noexcept { return pdcEnabled.load(std::memory_order_relaxed); }
+        int getCompensatedLatencySamples() const noexcept { return pdcLatencySamples.load(std::memory_order_relaxed); }
+
         void setCaptureLatencyMode(CaptureLatencyMode mode);
         CaptureLatencyMode getCaptureLatencyMode() const noexcept;
 
@@ -81,6 +87,10 @@ namespace dsd
         OutputManager  outputManager;
 
         EnginePerformanceStats perfStats;
+        std::atomic<bool> pdcEnabled{false};
+        std::atomic<int> pdcLatencySamples{0};
+
+        void updateDelayCompensation() noexcept;
         BlockTimingHistogram blockTimingHistogram;
 
         double currentSampleRate{DEFAULT_SAMPLE_RATE};

@@ -42,6 +42,7 @@ namespace dsd
         meterProcessor.prepare(sampleRate);
 
         pluginRack.prepare(sampleRate, maxBlockSize);
+        compensationDelay.prepare(sampleRate);
 
         std::lock_guard<std::mutex> lock(sourceMutex);
         if (inputSource != nullptr)
@@ -187,6 +188,12 @@ namespace dsd
         // 7. Per-Channel VST3 Plugin Rack
         midiBuffer.clear();
         pluginRack.processBlock(channelBuffer, midiBuffer, numSamples);
+
+        // 7b. Plugin delay compensation (aligns this channel with the slowest one)
+        compensationDelay.process(channelBuffer.getWritePointer(0),
+                                  channelBuffer.getWritePointer(1),
+                                  numSamples,
+                                  compensationTarget.load(std::memory_order_relaxed));
 
         // Meter Stage C: Post-VST
         meterPostVSTProc.processBlock(channelBuffer.getReadPointer(0),

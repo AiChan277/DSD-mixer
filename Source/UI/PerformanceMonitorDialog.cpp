@@ -196,6 +196,19 @@ namespace dsd
         totalLatencyLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getAccentGreen());
         addAndMakeVisible(totalLatencyLabel);
 
+        pdcToggle.setColour(juce::ToggleButton::textColourId, DSDLookAndFeel::getTextPrimary());
+        pdcToggle.setColour(juce::ToggleButton::tickColourId, DSDLookAndFeel::getAccentGreen());
+        pdcToggle.setToggleState(audioEngineRef.isPluginDelayCompensationEnabled(), juce::dontSendNotification);
+        pdcToggle.onClick = [this]()
+        {
+            audioEngineRef.setPluginDelayCompensationEnabled(pdcToggle.getToggleState());
+        };
+        addAndMakeVisible(pdcToggle);
+
+        pdcInfoLabel.setFont(juce::FontOptions(10.5f));
+        pdcInfoLabel.setColour(juce::Label::textColourId, DSDLookAndFeel::getTextSecondary());
+        addAndMakeVisible(pdcInfoLabel);
+
         // ====================================================================
         // PANEL 4: Block Timing Distribution
         // ====================================================================
@@ -213,7 +226,7 @@ namespace dsd
 
         timerCallback();
         startTimerHz(30);
-        setSize(640, 850);
+        setSize(640, 880);
     }
 
     PerformanceMonitorDialog::~PerformanceMonitorDialog()
@@ -358,7 +371,22 @@ namespace dsd
                                                                 : DSDLookAndFeel::getTextSecondary()));
         }
 
-        // 5. Latency Profile & Signal Path Diagnostics
+        // 5. Plugin delay compensation
+        {
+            pdcToggle.setToggleState(audioEngineRef.isPluginDelayCompensationEnabled(), juce::dontSendNotification);
+            const int pdcSamples = audioEngineRef.getCompensatedLatencySamples();
+            const double sr = audioEngineRef.getCurrentSampleRate();
+            const double pdcMs = (sr > 0.0) ? pdcSamples * 1000.0 / sr : 0.0;
+            if (audioEngineRef.isPluginDelayCompensationEnabled())
+                pdcInfoLabel.setText(juce::String::formatted("ON: all channels aligned to the slowest plugin chain (+%d smp / %.2f ms)",
+                                                             pdcSamples, pdcMs),
+                                     juce::dontSendNotification);
+            else
+                pdcInfoLabel.setText("OFF: channels with latency plugins arrive late at shared outputs (no added latency)",
+                                     juce::dontSendNotification);
+        }
+
+        // 6. Latency Profile & Signal Path Diagnostics
         const auto activeMode = audioEngineRef.getCaptureLatencyMode();
         auto updateBtnStyle = [activeMode](juce::TextButton& btn, CaptureLatencyMode mode)
         {
@@ -480,6 +508,9 @@ namespace dsd
         pathBreakdownLabel2.setBounds(bounds.removeFromTop(16));
         bounds.removeFromTop(4);
         totalLatencyLabel.setBounds(bounds.removeFromTop(22));
+        auto pdcRow = bounds.removeFromTop(24);
+        pdcToggle.setBounds(pdcRow.removeFromLeft(210));
+        pdcInfoLabel.setBounds(pdcRow);
 
         // PANEL 4: Block Timing Distribution
         bounds.removeFromTop(10);

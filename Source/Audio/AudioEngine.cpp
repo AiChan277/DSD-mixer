@@ -90,6 +90,9 @@ namespace dsd
         for (int ch = numChannelsToCopy; ch < tempInputBuffer.getNumChannels(); ++ch)
             tempInputBuffer.clear(ch, 0, numSamples);
 
+        // Plugin delay compensation targets (from each rack's latency last block)
+        updateDelayCompensation();
+
         // ====================================================================
         // PHASE 2: Channel DSP Processing (Multicore Scheduler Parallel Dispatch)
         // ====================================================================
@@ -171,6 +174,32 @@ namespace dsd
         // PHASE 6: Adaptive Worker Pool Boundary Evaluation
         // ====================================================================
         dspScheduler.updateAdaptiveWorkerCount(elapsedSec, deadlineSec, channelManager.getNumChannels());
+    }
+
+    void AudioEngine::updateDelayCompensation() noexcept
+    {
+        const int numCh = channelManager.getNumChannels();
+        const bool enabled = pdcEnabled.load(std::memory_order_relaxed);
+
+        int maxLatency = 0;
+        if (enabled)
+        {
+            for (int i = 0; i < numCh; ++i)
+                if (const auto* ch = channelManager.getChannel(i))
+                    maxLatency = std::max(maxLatency, ch->getPluginRack().getProcessingLatencySamples());
+            maxLatency = std::min(maxLatency, CompensationDelay::kMaxDelaySamples);
+        }
+
+        for (int i = 0; i < numCh; ++i)
+        {
+            if (auto* ch = channelManager.getChannel(i))
+            {
+                const int own = ch->getPluginRack().getProcessingLatencySamples();
+                ch->setCompensationDelaySamples(enabled ? std::max(0, maxLatency - own) : 0);
+            }
+        }
+
+        pdcLatencySamples.store(maxLatency, std::memory_order_relaxed);
     }
 
     std::vector<CaptureDiagnostics> AudioEngine::getActiveCaptureDiagnostics() const

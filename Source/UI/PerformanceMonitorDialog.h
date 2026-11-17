@@ -70,6 +70,8 @@ namespace dsd
         juce::Label pathBreakdownLabel1;
         juce::Label pathBreakdownLabel2;
         juce::Label totalLatencyLabel;
+        juce::ToggleButton pdcToggle{"Plugin Delay Compensation"};
+        juce::Label pdcInfoLabel;
 
         // Panel 4: Block Timing Distribution
         juce::Label timingSectionLabel;
