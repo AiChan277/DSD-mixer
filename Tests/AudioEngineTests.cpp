@@ -946,6 +946,61 @@ void testAdaptiveResamplingFifo()
     std::cout << "[PASS] Adaptive FIFO held latency and tracked drift without discontinuities." << std::endl;
 }
 
+void testPreFaderSends()
+{
+    std::cout << "[TEST] Running PRE/POST fader send tests..." << std::endl;
+
+    constexpr int n = 128;
+    dsd::ChannelManager channelMgr;
+    channelMgr.initializeDefaultChannels(dsd::NUM_CHANNELS_LEVEL1);
+    channelMgr.prepare(48000.0, n);
+    auto* ch = channelMgr.getChannel(0);
+    ch->setInputSource(std::make_unique<ConstantInputSource>(0.5f));
+
+    dsd::OutputManager outputMgr;
+    outputMgr.initializeDefaultOutputs(dsd::NUM_OUTPUT_BUSES_LEVEL1);
+    outputMgr.prepare(48000.0, n);
+    // OUT 2/3 default to monitor role for PFL; make OUT 3 a plain program bus.
+    outputMgr.getOutput(2)->setMonitor(false);
+
+    dsd::RoutingEngine router;
+    router.setRouteEnabled(0, 2, true);   // CH1 -> OUT3
+    router.setRoutePreFader(0, 2, true);  // PRE
+    CHECK(router.isRoutePreFader(0, 2));
+    CHECK(!router.isRoutePreFader(0, 0)); // OUT1 stays POST
+
+    juce::AudioBuffer<float> devIn(2, n);
+    devIn.clear();
+    auto run = [&](int blocks) {
+        for (int b = 0; b < blocks; ++b)
+        {
+            channelMgr.processChannels(devIn, n);
+            router.routeChannelsToOutputs(channelMgr, outputMgr, n);
+        }
+    };
+
+    ch->setFaderDb(-60.0f); // fader fully down (15 ms exponential fader smoothing)
+    run(100);
+    const float post = outputMgr.getOutput(0)->getBuffer().getMagnitude(0, 0, n);
+    const float pre = outputMgr.getOutput(2)->getBuffer().getMagnitude(0, 0, n);
+    CHECK(post < 1.0e-4f);                // POST follows the fader
+    CHECK(std::abs(pre - 0.5f) < 1.0e-3f); // PRE ignores fader and pan (pre-pan, unity)
+
+    ch->setMute(true);
+    run(2);
+    CHECK(outputMgr.getOutput(2)->getBuffer().getMagnitude(0, 0, n) < 1.0e-6f); // MUTE kills PRE too
+
+    ch->setMute(false);
+    run(1);
+    float maxStep = 0.0f;
+    const auto& b = outputMgr.getOutput(2)->getBuffer();
+    for (int i = 1; i < n; ++i)
+        maxStep = std::max(maxStep, std::abs(b.getSample(0, i) - b.getSample(0, i - 1)));
+    CHECK(maxStep < 0.01f); // unmute ramps in
+
+    std::cout << "[PASS] PRE send level " << pre << " with fader down; POST " << post << "." << std::endl;
+}
+
 void testDeviceEnumeration()
 {
     std::cout << "[TEST] Enumerating Windows Audio Devices via JUCE..." << std::endl;
@@ -1901,6 +1956,7 @@ int main()
     testPluginRackConcurrentMutation();
     testPluginDelayCompensation();
     testAdaptiveResamplingFifo();
+    testPreFaderSends();
     testPerformanceTelemetryAndOverrun();
     testLowLatencyCaptureFifo();
     testWindowAudioCapture();

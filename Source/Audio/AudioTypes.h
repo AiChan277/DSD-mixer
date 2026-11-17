@@ -46,6 +46,7 @@ namespace dsd
         std::atomic<float> sendGainDb{0.0f}; // 0 dB default send level
         std::atomic<float> sendPan{0.0f};    // Center
         std::atomic<bool>  enabled{false};   // Route enabled flag
+        std::atomic<bool>  preFader{false};  // true: tap post-insert / pre-fader (still follows MUTE)
     };
 
     struct WorkerThreadStats

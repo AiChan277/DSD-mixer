@@ -23,6 +23,21 @@ namespace dsd
         }
     }
 
+    bool RoutingEngine::isRoutePreFader(int channelIdx, int outputIdx) const noexcept
+    {
+        if (channelIdx >= 0 && channelIdx < NUM_CHANNELS_LEVEL1 &&
+            outputIdx >= 0 && outputIdx < NUM_OUTPUT_BUSES_LEVEL1)
+            return matrix[channelIdx][outputIdx].preFader.load(std::memory_order_relaxed);
+        return false;
+    }
+
+    void RoutingEngine::setRoutePreFader(int channelIdx, int outputIdx, bool preFader) noexcept
+    {
+        if (channelIdx >= 0 && channelIdx < NUM_CHANNELS_LEVEL1 &&
+            outputIdx >= 0 && outputIdx < NUM_OUTPUT_BUSES_LEVEL1)
+            matrix[channelIdx][outputIdx].preFader.store(preFader, std::memory_order_relaxed);
+    }
+
     void RoutingEngine::prepare(double /*sampleRate*/, int /*maxBlockSize*/)
     {
     }
@@ -187,21 +202,30 @@ namespace dsd
                             continue;
                         }
 
+                        const bool preFaderTap = matrix[chIdx][outIdx].preFader.load(std::memory_order_relaxed);
                         const float sendGainDb = matrix[chIdx][outIdx].sendGainDb.load(std::memory_order_relaxed);
-                        const float sendLinear = GainProcessor::dbToLinear(sendGainDb);
+                        // PRE sends bypass the fader but still obey MUTE (ramped via the send smoother).
+                        const float sendLinear = (preFaderTap && ch->getMute()) ? 0.0f : GainProcessor::dbToLinear(sendGainDb);
 
                         if (!smoothing.activeLastBlock)
                         {
                             smoothing.appliedGain = sendLinear;
                             smoothing.activeLastBlock = true;
                         }
+                        else if (smoothing.preFaderLastBlock != preFaderTap)
+                        {
+                            // PRE/POST switched on a live route: the two taps differ by
+                            // fader and pan, so fade the new tap in instead of jumping.
+                            smoothing.appliedGain = 0.0f;
+                        }
+                        smoothing.preFaderLastBlock = preFaderTap;
 
                         const float startGain = smoothing.appliedGain;
                         smoothing.appliedGain = sendLinear;
                         if (sendLinear <= 0.0f && startGain <= 0.0f)
                             continue;
 
-                        const auto& chBuf = ch->getOutputBuffer();
+                        const auto& chBuf = preFaderTap ? ch->getPflBuffer() : ch->getOutputBuffer();
                         const float* chReadL = chBuf.getReadPointer(0);
                         const float* chReadR = chBuf.getReadPointer(1);
 

@@ -110,6 +110,7 @@ namespace dsd
         // Bottom Broadcast Inspector Bar (Topology in Grid, Parameters in Inspector)
         juce::Label inspectorRouteLabel;
         juce::TextButton inspectorToggleBtn{"Disconnect"};
+        juce::TextButton inspectorTapBtn{"POST"};
         juce::Label inspectorGainPrefixLabel;
         juce::Slider inspectorGainSlider;
         juce::Label inspectorGainReadout;

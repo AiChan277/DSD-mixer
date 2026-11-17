@@ -379,6 +379,14 @@ namespace dsd
 
                     g.fillRect(boxRect);
                     drawCheckmark(g, boxRect, juce::Colours::white);
+
+                    if (routerRef.isRoutePreFader(ch, out))
+                    {
+                        g.setFont(juce::FontOptions(8.5f, juce::Font::bold));
+                        g.setColour(colAccent);
+                        g.drawText("PRE", juce::Rectangle<float>(boxRect.getRight() + 4.0f, boxRect.getY(), 26.0f, boxSize),
+                                   juce::Justification::centredLeft, false);
+                    }
                 }
                 else
                 {
@@ -613,6 +621,19 @@ namespace dsd
         styleBtn(inspectorToggleBtn, false);
         addAndMakeVisible(inspectorToggleBtn);
 
+        inspectorTapBtn.setTooltip("Send tap: POST = after fader/pan (follows the channel fader). "
+                                   "PRE = after inserts, before fader (independent monitor mix; still follows MUTE).");
+        inspectorTapBtn.onClick = [this]()
+        {
+            int ch, out;
+            canvas->getSelectedCell(ch, out);
+            routingEngineRef.setRoutePreFader(ch, out, !routingEngineRef.isRoutePreFader(ch, out));
+            canvas->repaint();
+            updateInspector(ch, out);
+        };
+        styleBtn(inspectorTapBtn, false);
+        addAndMakeVisible(inspectorTapBtn);
+
         inspectorGainPrefixLabel.setText("GAIN", juce::dontSendNotification);
         inspectorGainPrefixLabel.setFont(juce::FontOptions(10.0f, juce::Font::bold));
         inspectorGainPrefixLabel.setColour(juce::Label::textColourId, colTextSec);
@@ -652,7 +673,7 @@ namespace dsd
         addAndMakeVisible(inspectorResetGainBtn);
 
         updateInspector(0, 0);
-        setSize(760, 620);
+        setSize(820, 620);
     }
 
     RoutingMatrixDialog::~RoutingMatrixDialog()
@@ -950,6 +971,7 @@ namespace dsd
                 cellObj->setProperty("enabled", routingEngineRef.isRouteEnabled(ch, out));
                 cellObj->setProperty("sendGainDb", routingEngineRef.getRouteGainDb(ch, out));
                 cellObj->setProperty("sendPan", routingEngineRef.getRoutePan(ch, out));
+                cellObj->setProperty("preFader", routingEngineRef.isRoutePreFader(ch, out));
                 matrixArray.add(juce::var(cellObj.release()));
             }
         }
@@ -988,6 +1010,7 @@ namespace dsd
                         routingEngineRef.setRouteEnabled(ch, out, static_cast<bool>(item["enabled"]));
                         routingEngineRef.setRouteGainDb(ch, out, static_cast<float>(item["sendGainDb"]));
                         routingEngineRef.setRoutePan(ch, out, static_cast<float>(item["sendPan"]));
+                        routingEngineRef.setRoutePreFader(ch, out, item.hasProperty("preFader") && static_cast<bool>(item["preFader"]));
                     }
                 }
                 if (canvas != nullptr)
@@ -1025,6 +1048,10 @@ namespace dsd
             inspectorToggleBtn.setButtonText("Connect");
             inspectorToggleBtn.setColour(juce::TextButton::textColourOffId, colTextPri);
         }
+
+        const bool isPre = routingEngineRef.isRoutePreFader(ch, out);
+        inspectorTapBtn.setButtonText(isPre ? "PRE" : "POST");
+        inspectorTapBtn.setColour(juce::TextButton::textColourOffId, isPre ? colAccent : colTextPri);
 
         const float gainDb = routingEngineRef.getRouteGainDb(ch, out);
         inspectorGainSlider.setValue(gainDb, juce::dontSendNotification);
@@ -1118,6 +1145,8 @@ namespace dsd
         inspectorRouteLabel.setBounds(inspectArea.removeFromLeft(215));
         inspectArea.removeFromLeft(6);
         inspectorToggleBtn.setBounds(inspectArea.removeFromLeft(80));
+        inspectArea.removeFromLeft(6);
+        inspectorTapBtn.setBounds(inspectArea.removeFromLeft(50));
 
         inspectArea.removeFromLeft(16);
         inspectorGainPrefixLabel.setBounds(inspectArea.removeFromLeft(36));
