@@ -170,8 +170,7 @@ namespace dsd
     // Also runs device recovery: every 2 s (message thread) it reopens secondary
     // devices that stopped and moves the primary device back to the user's
     // chosen device once it reappears after a fallback.
-    class MultiDeviceManager : private juce::Timer,
-                               private juce::ChangeListener
+    class MultiDeviceManager : private juce::ChangeListener
     {
     public:
         static MultiDeviceManager& getInstance();
@@ -208,7 +207,19 @@ namespace dsd
         MultiDeviceManager() = default;
         ~MultiDeviceManager() override = default;
 
-        void timerCallback() override;
+        // Owned timer (created in initialize, destroyed in shutdown). The
+        // singleton itself must not be a juce::Timer: a Timer pins JUCE's
+        // shared timer thread, and a static one would tear it down after
+        // JUCE has shut down (crash on exit).
+        struct RecoveryTimer : public juce::Timer
+        {
+            explicit RecoveryTimer(MultiDeviceManager& o) : owner(o) {}
+            ~RecoveryTimer() override { stopTimer(); }
+            void timerCallback() override { owner.runRecoveryPass(); }
+            MultiDeviceManager& owner;
+        };
+        std::unique_ptr<RecoveryTimer> recoveryTimer;
+
         void changeListenerCallback(juce::ChangeBroadcaster* source) override;
         bool isDeviceNamePresent(const juce::String& name) const;
         void capturePreferredSetup();

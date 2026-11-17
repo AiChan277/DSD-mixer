@@ -4,6 +4,7 @@
 #include "UI/PerformanceMonitorDialog.h"
 #include "UI/StageInspectorDialog.h"
 #include "UI/ControlServerDialog.h"
+#include "UI/ToolsDialogs.h"
 #include "Control/ControlServer.h"
 #include "Session/SessionManager.h"
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -45,6 +46,11 @@ namespace dsd
         styleTopBtn(remoteBtn);
         remoteBtn.onClick = [this]() { openControlServerDialog(); };
         addAndMakeVisible(remoteBtn);
+
+        styleTopBtn(toolsBtn);
+        toolsBtn.setTooltip("Scenes, auto-ducking, output loudness & limiters");
+        toolsBtn.onClick = [this]() { showToolsMenu(); };
+        addAndMakeVisible(toolsBtn);
 
         styleTopBtn(saveSessionBtn);
         saveSessionBtn.onClick = [this]() { onSaveSessionClicked(); };
@@ -139,6 +145,37 @@ namespace dsd
         opts.useNativeTitleBar = true;
         opts.resizable = true;
 
+        opts.launchAsync();
+    }
+
+    void TopBar::showToolsMenu()
+    {
+        juce::PopupMenu menu;
+        menu.addItem(1, "Scenes...");
+        menu.addItem(2, "Auto-Ducking...");
+        menu.addItem(3, "Output Loudness & Limiters...");
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&toolsBtn),
+            [this](int result)
+            {
+                if (result == 1)
+                    openToolDialog(std::make_unique<ScenesDialog>(audioEngineRef), "DSD Mixer - Scenes");
+                else if (result == 2)
+                    openToolDialog(std::make_unique<AutoDuckDialog>(audioEngineRef), "DSD Mixer - Auto-Ducking");
+                else if (result == 3)
+                    openToolDialog(std::make_unique<LoudnessDialog>(audioEngineRef), "DSD Mixer - Output Loudness & Limiters");
+            });
+    }
+
+    void TopBar::openToolDialog(std::unique_ptr<juce::Component> content, const juce::String& title)
+    {
+        juce::DialogWindow::LaunchOptions opts;
+        opts.content.setOwned(content.release());
+        opts.dialogTitle = title;
+        opts.componentToCentreAround = this;
+        opts.dialogBackgroundColour = DSDLookAndFeel::getConsoleDarkBg();
+        opts.escapeKeyTriggersCloseButton = true;
+        opts.useNativeTitleBar = true;
+        opts.resizable = true;
         opts.launchAsync();
     }
 
@@ -323,22 +360,25 @@ namespace dsd
         leftX += 85;
 
         loadSessionBtn.setBounds(leftX, btnY, 80, btnH);
+        leftX += 88;
+
+        toolsBtn.setBounds(leftX, btnY, 64, btnH);
 
         // Technical status & diagnostics pinned to the right
         int rightX = getWidth() - 12;
 
-        const int podW = 398;
+        const int podW = 362;
         statusPodBounds = juce::Rectangle<float>(static_cast<float>(rightX - podW), static_cast<float>(btnY), static_cast<float>(podW), static_cast<float>(btnH));
 
         // Layout items from right to left inside status pod
-        cpuLoadLabel.setBounds(rightX - 114, btnY, 110, btnH);
-        rightX -= 118;
+        cpuLoadLabel.setBounds(rightX - 96, btnY, 92, btnH);
+        rightX -= 100;
 
         engineStatusBadge.setBounds(rightX - 80, btnY + 2, 76, btnH - 4);
         rightX -= 84;
 
-        bufferSizeLabel.setBounds(rightX - 120, btnY, 116, btnH);
-        rightX -= 124;
+        bufferSizeLabel.setBounds(rightX - 104, btnY, 100, btnH);
+        rightX -= 106;
 
         sampleRateLabel.setBounds(rightX - 70, btnY, 66, btnH);
     }

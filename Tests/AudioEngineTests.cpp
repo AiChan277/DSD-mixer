@@ -27,6 +27,8 @@
 #include "DSP/TruePeakLimiter.h"
 #include "DSP/LoudnessMeter.h"
 #include "Session/SceneManager.h"
+#include "Audio/MultiDeviceManager.h"
+#include "Audio/AudioDeviceManager.h"
 
 class MockAudioPluginInstance : public juce::AudioPluginInstance
 {
@@ -1402,6 +1404,122 @@ void testScenesAndExtendedSession()
     std::cout << "[PASS] Scenes recall the mix; sessions keep PRE/POST, limiter, ducking, PDC, HPF/PAD, built-ins and scenes." << std::endl;
 }
 
+// Opt-in (DSD_LIVE_DEVICE_TEST=1): real WASAPI loop through a virtual cable.
+// Plays a tone into a secondary output bridge and records it back through a
+// secondary input bridge from the same cable, at real-time pace.
+void testLiveDeviceBridgeLoop()
+{
+    if (juce::SystemStats::getEnvironmentVariable("DSD_LIVE_DEVICE_TEST", "") != "1")
+        return;
+
+    std::cout << "[TEST] Running LIVE secondary-device bridge loop (WASAPI)..." << std::endl;
+
+    dsd::AudioDeviceManager devMgr;
+    devMgr.initialize(2, 2);
+    auto& mdm = dsd::MultiDeviceManager::getInstance();
+    mdm.initialize(devMgr.getJuceManager());
+
+    const auto outs = mdm.getAvailableOutputDevices();
+    const auto ins = mdm.getAvailableInputDevices();
+    juce::String outName, inName;
+    for (const auto& o : outs)
+        if (o.containsIgnoreCase("Line 1") && o.containsIgnoreCase("Virtual Audio Cable")) outName = o;
+    for (const auto& i : ins)
+        if (i.containsIgnoreCase("Line 1") && i.containsIgnoreCase("Virtual Audio Cable")) inName = i;
+
+    if (outName.isEmpty() || inName.isEmpty())
+    {
+        std::cout << "  [SKIP] No 'Line 1 (Virtual Audio Cable)' input/output pair found." << std::endl;
+        mdm.shutdown();
+        return;
+    }
+    std::cout << "  out: " << outName << "  |  in: " << inName << std::endl;
+
+    constexpr double sr = 48000.0;
+    constexpr int block = 128;
+    {
+        auto sink = mdm.createOutputSinkFor(outName);
+        auto sourceBase = mdm.createInputSourceFor(inName);
+        auto* source = dynamic_cast<dsd::WindowsDeviceInputSource*>(sourceBase.get());
+        CHECK(sink != nullptr);
+        CHECK(source != nullptr);
+        if (sink == nullptr || source == nullptr)
+        {
+            mdm.shutdown();
+            return;
+        }
+        sink->prepare(sr, block);
+        source->prepare(sr, block);
+        CHECK(sink->isStreaming());
+        CHECK(source->isStreaming());
+
+        juce::AudioBuffer<float> outBuf(2, block), inBuf(2, block);
+        juce::AudioBuffer<float> dummy(2, block);
+        double phase = 0.0;
+        const double inc = 2.0 * juce::MathConstants<double>::pi * 1000.0 / sr;
+
+        const double seconds = 8.0;
+        const int blocks = static_cast<int>(seconds * sr / block);
+        const auto start = juce::Time::getMillisecondCounterHiRes();
+        double sumSq = 0.0;
+        long measured = 0;
+        float maxStep = 0.0f, prev = 0.0f;
+        bool havePrev = false;
+
+        for (int b = 0; b < blocks; ++b)
+        {
+            for (int i = 0; i < block; ++i)
+            {
+                const float v = 0.5f * static_cast<float>(std::sin(phase));
+                phase += inc;
+                outBuf.setSample(0, i, v);
+                outBuf.setSample(1, i, v);
+            }
+            sink->writeBlock(outBuf, block);
+            source->readBlock(inBuf, dummy, block);
+
+            if (b * block > sr * 3.0) // after 3 s: settled
+            {
+                for (int i = 0; i < block; ++i)
+                {
+                    const float v = inBuf.getSample(0, i);
+                    sumSq += static_cast<double>(v) * v;
+                    ++measured;
+                    if (havePrev)
+                        maxStep = std::max(maxStep, std::abs(v - prev));
+                    prev = v;
+                    havePrev = true;
+                }
+            }
+
+            // Pace like an audio callback (2.67 ms per block).
+            const double due = start + (b + 1) * block * 1000.0 / sr;
+            while (juce::Time::getMillisecondCounterHiRes() < due)
+            {
+                if (due - juce::Time::getMillisecondCounterHiRes() > 1.5)
+                    juce::Thread::sleep(1);
+            }
+        }
+
+        const double rms = measured > 0 ? std::sqrt(sumSq / measured) : 0.0;
+        const auto status = mdm.getBridgeStatus();
+        for (const auto& st : status)
+            std::cout << "  " << (st.isInput ? "IN  " : "OUT ") << st.deviceName << ": drift " << st.driftPpm
+                      << " ppm, buffered " << st.bufferedMs << " ms, underruns " << st.underruns << std::endl;
+        std::cout << "  captured RMS " << rms << " (expected ~0.354), max step " << maxStep << std::endl;
+
+        CHECK(std::abs(rms - 0.3536) < 0.03);   // tone arrives at the right level
+        CHECK(maxStep < 0.1f);                  // continuous (0.5 * 2pi * 1k/48k = 0.065)
+        for (const auto& st : status)
+        {
+            CHECK(st.streaming);
+            CHECK(std::abs(st.driftPpm) < 2000.0);
+        }
+    }
+    mdm.shutdown();
+    std::cout << "[PASS] Live bridge loop completed." << std::endl;
+}
+
 void testDeviceEnumeration()
 {
     std::cout << "[TEST] Enumerating Windows Audio Devices via JUCE..." << std::endl;
@@ -2363,6 +2481,7 @@ int main()
     testTruePeakLimiter();
     testLoudnessMeter();
     testScenesAndExtendedSession();
+    testLiveDeviceBridgeLoop();
     testPerformanceTelemetryAndOverrun();
     testLowLatencyCaptureFifo();
     testWindowAudioCapture();

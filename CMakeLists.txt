@@ -48,6 +48,8 @@ target_sources(DSDMixer PRIVATE
     Source/Main.cpp
     Source/Application/DSDApplication.h
     Source/Application/DSDApplication.cpp
+    Source/Application/CrashReporter.h
+    Source/Application/CrashReporter.cpp
     Source/Audio/AudioTypes.h
     Source/Audio/ProcessCpuTracker.h
     Source/Audio/ProcessCpuTracker.cpp
@@ -112,6 +114,8 @@ target_sources(DSDMixer PRIVATE
     Source/UI/RoutingMatrixDialog.cpp
     Source/UI/PerformanceMonitorDialog.h
     Source/UI/PerformanceMonitorDialog.cpp
+    Source/UI/ToolsDialogs.h
+    Source/UI/ToolsDialogs.cpp
     Source/UI/PluginRackDialog.h
     Source/UI/PluginRackDialog.cpp
     Source/UI/StageInspectorDialog.h
@@ -159,6 +163,11 @@ target_compile_definitions(DSDMixer PRIVATE
     JUCE_PLUGINHOST_VST3=1
     JUCE_PLUGINHOST_AU=0
 )
+
+if (MSVC)
+    # Map file: resolves crash-report addresses to functions without shipping symbols.
+    target_link_options(DSDMixer PRIVATE "/MAP")
+endif()
 
 target_link_libraries(DSDMixer PRIVATE
     juce::juce_core

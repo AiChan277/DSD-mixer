@@ -25,6 +25,12 @@ namespace dsd
 
         void saveIfNeeded();
 
+        // Saves and releases the settings file. Must be called from
+        // JUCEApplication::shutdown(): juce::PropertiesFile is a Timer, and
+        // destroying it during static destruction (after JUCE has shut down)
+        // crashes the process on exit.
+        void shutdown();
+
     private:
         AppSettings();
         ~AppSettings();

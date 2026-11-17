@@ -36,6 +36,7 @@ namespace dsd
         juce::TextButton perfBtn{"PERF MONITOR"};
         juce::TextButton stageInspectorBtn{"STAGE METERS"};
         juce::TextButton remoteBtn{"REMOTE"};
+        juce::TextButton toolsBtn{"TOOLS"};
         juce::TextButton saveSessionBtn{"SAVE .DSD"};
         juce::TextButton loadSessionBtn{"LOAD .DSD"};
 
@@ -52,6 +53,8 @@ namespace dsd
         void openPerformanceDialog();
         void openStageInspectorDialog();
         void openControlServerDialog();
+        void showToolsMenu();
+        void openToolDialog(std::unique_ptr<juce::Component> content, const juce::String& title);
         void onSaveSessionClicked();
         void onLoadSessionClicked();
     };

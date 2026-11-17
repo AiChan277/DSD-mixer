@@ -351,12 +351,13 @@ namespace dsd
         }
         capturePreferredSetup();
         hostManager.addChangeListener(this);
-        startTimer(2000);
+        recoveryTimer = std::make_unique<RecoveryTimer>(*this);
+        recoveryTimer->startTimer(2000);
     }
 
     void MultiDeviceManager::shutdown()
     {
-        stopTimer();
+        recoveryTimer.reset();
         std::lock_guard<std::mutex> lock(mutex);
         if (juceManagerRef != nullptr)
             juceManagerRef->removeChangeListener(this);
@@ -449,11 +450,6 @@ namespace dsd
 
         if (shouldCapture)
             capturePreferredSetup();
-    }
-
-    void MultiDeviceManager::timerCallback()
-    {
-        runRecoveryPass();
     }
 
     void MultiDeviceManager::runRecoveryPass()
