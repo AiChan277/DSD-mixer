@@ -1,4 +1,5 @@
 #include "Plugin/PluginManager.h"
+#include "Plugin/BuiltInPlugins.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
 namespace dsd
@@ -242,6 +243,17 @@ namespace dsd
     std::unique_ptr<juce::AudioPluginInstance> PluginManager::loadPlugin(const juce::PluginDescription& desc,
                                                                          juce::String& errorMessage)
     {
+        // Built-in processors never touch the VST3 format manager.
+        if (BuiltInPlugins::isBuiltIn(desc))
+        {
+            auto builtIn = BuiltInPlugins::create(desc.fileOrIdentifier);
+            if (builtIn == nullptr)
+                errorMessage = "Unknown built-in processor: " + desc.fileOrIdentifier;
+            else
+                builtIn->setPlayConfigDetails(2, 2, 48000.0, 128);
+            return builtIn;
+        }
+
         initialize();
         double sampleRate = 48000.0;
         int blockSize = 128;

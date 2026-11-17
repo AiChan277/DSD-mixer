@@ -85,6 +85,7 @@ target_sources(DSDMixer PRIVATE
     Source/Plugin/PluginRack.cpp
     Source/Plugin/PluginManager.h
     Source/Plugin/PluginManager.cpp
+    Source/Plugin/BuiltInPlugins.cpp
     Source/Session/SessionManager.h
     Source/Session/SessionManager.cpp
     Source/Session/AppSettings.h
@@ -191,6 +192,7 @@ add_executable(AudioEngineTests
     Source/Output/OutputManager.cpp
     Source/Plugin/PluginRack.cpp
     Source/Plugin/PluginManager.cpp
+    Source/Plugin/BuiltInPlugins.cpp
     Source/Audio/AudioEngine.cpp
     Source/Audio/ProcessCpuTracker.cpp
     Source/Session/SessionManager.cpp
@@ -247,6 +249,7 @@ add_executable(ControlProtocolTests
     Source/Output/OutputManager.cpp
     Source/Plugin/PluginRack.cpp
     Source/Plugin/PluginManager.cpp
+    Source/Plugin/BuiltInPlugins.cpp
     Source/Session/SessionManager.cpp
     Source/DSP/MeterProcessor.cpp
 )

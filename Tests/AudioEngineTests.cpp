@@ -22,6 +22,7 @@
 #include "Audio/AudioEngine.h"
 #include "Audio/BlockTimingHistogram.h"
 #include "Audio/AdaptiveResamplingFifo.h"
+#include "Plugin/BuiltInPlugins.h"
 
 class MockAudioPluginInstance : public juce::AudioPluginInstance
 {
@@ -1001,6 +1002,128 @@ void testPreFaderSends()
     std::cout << "[PASS] PRE send level " << pre << " with fader down; POST " << post << "." << std::endl;
 }
 
+// Peak level (dBFS) of a sine after running it through a processor for 0.5 s.
+static float measureSineDb(juce::AudioPluginInstance& p, float freqHz, float amplitude, int seconds10ths = 5)
+{
+    constexpr double sr = 48000.0;
+    constexpr int block = 256;
+    p.setPlayConfigDetails(2, 2, sr, block);
+    p.prepareToPlay(sr, block);
+    juce::AudioBuffer<float> buf(2, block);
+    juce::MidiBuffer midi;
+    double phase = 0.0;
+    const double inc = 2.0 * juce::MathConstants<double>::pi * freqHz / sr;
+    const int blocks = static_cast<int>(sr * seconds10ths / 10.0 / block);
+    float peak = 0.0f;
+    for (int b = 0; b < blocks; ++b)
+    {
+        for (int i = 0; i < block; ++i)
+        {
+            const float v = amplitude * static_cast<float>(std::sin(phase));
+            phase += inc;
+            buf.setSample(0, i, v);
+            buf.setSample(1, i, v);
+        }
+        p.processBlock(buf, midi);
+        if (b >= blocks / 2)
+            peak = std::max(peak, buf.getMagnitude(0, 0, block));
+    }
+    return 20.0f * std::log10(std::max(peak, 1.0e-9f));
+}
+
+void testBuiltInProcessors()
+{
+    std::cout << "[TEST] Running built-in Gate / EQ / Compressor tests..." << std::endl;
+
+    // Factory + description round trip (what session restore relies on).
+    const auto descs = dsd::BuiltInPlugins::getDescriptions();
+    CHECK(descs.size() == 3);
+    for (const auto& d : descs)
+    {
+        CHECK(dsd::BuiltInPlugins::isBuiltIn(d));
+        CHECK(dsd::BuiltInPlugins::create(d.fileOrIdentifier) != nullptr);
+    }
+    CHECK(dsd::BuiltInPlugins::create("dsd.builtin.unknown") == nullptr);
+
+    // ---- Gate: quiet signal closed (range -80 dB), loud signal passes.
+    {
+        dsd::BuiltInGate gate;
+        gate.setParameterValue("threshold", -40.0f);
+        const float quiet = measureSineDb(gate, 1000.0f, 0.001f);  // -60 dBFS in
+        CHECK(quiet < -100.0f);
+        const float loud = measureSineDb(gate, 1000.0f, 0.5f);     // -6 dBFS in
+        CHECK(std::abs(loud - (-6.02f)) < 0.3f);
+        std::cout << "  Gate: -60 dBFS in -> " << quiet << " dBFS, -6 dBFS in -> " << loud << " dBFS" << std::endl;
+    }
+
+    // ---- EQ: +9 dB peak at 1 kHz, 100 Hz untouched; HPF cuts 30 Hz.
+    {
+        dsd::BuiltInEq eq;
+        const float flat = measureSineDb(eq, 1000.0f, 0.25f);
+        CHECK(std::abs(flat - (-12.04f)) < 0.1f); // all bands at 0 dB = transparent
+
+        eq.setParameterValue("mid1Freq", 1000.0f);
+        eq.setParameterValue("mid1Gain", 9.0f);
+        eq.setParameterValue("mid1Q", 1.0f);
+        const float boosted = measureSineDb(eq, 1000.0f, 0.25f);
+        const float far = measureSineDb(eq, 100.0f, 0.25f);
+        CHECK(std::abs((boosted - flat) - 9.0f) < 0.3f);
+        CHECK(std::abs(far - flat) < 0.5f);
+
+        dsd::BuiltInEq hp;
+        hp.setParameterValue("hpfOn", 1.0f);
+        hp.setParameterValue("hpfFreq", 120.0f);
+        const float low = measureSineDb(hp, 30.0f, 0.25f, 10);
+        CHECK(low - flat < -20.0f); // 2 octaves below a 12 dB/oct HPF
+        std::cout << "  EQ: 1 kHz +" << (boosted - flat) << " dB, 100 Hz " << (far - flat)
+                  << " dB, HPF@120 at 30 Hz " << (low - flat) << " dB" << std::endl;
+    }
+
+    // ---- Compressor: static curve and steady-state reduction.
+    {
+        CHECK(dsd::BuiltInCompressor::computeGainDb(-30.0f, -20.0f, 4.0f, 0.0f) == 0.0f);
+        CHECK(std::abs(dsd::BuiltInCompressor::computeGainDb(-8.0f, -20.0f, 4.0f, 0.0f) - (-9.0f)) < 1.0e-4f);
+        // Knee is continuous at its edges.
+        CHECK(std::abs(dsd::BuiltInCompressor::computeGainDb(-23.0f, -20.0f, 4.0f, 6.0f)) < 1.0e-4f);
+        CHECK(std::abs(dsd::BuiltInCompressor::computeGainDb(-17.0f, -20.0f, 4.0f, 6.0f) - (-2.25f)) < 1.0e-3f);
+
+        dsd::BuiltInCompressor comp;
+        comp.setParameterValue("threshold", -20.0f);
+        comp.setParameterValue("ratio", 4.0f);
+        comp.setParameterValue("knee", 0.0f);
+        const float out = measureSineDb(comp, 1000.0f, 0.5f, 10); // -6 dB peak in
+        // 14 dB over threshold at 4:1 -> 10.5 dB reduction -> about -16.5 dBFS
+        CHECK(std::abs(out - (-16.52f)) < 1.0f);
+        CHECK(comp.getGainReductionDb() < -9.5f);
+        std::cout << "  Compressor: -6 dBFS in -> " << out << " dBFS (GR " << comp.getGainReductionDb() << " dB)" << std::endl;
+    }
+
+    // ---- State save / restore.
+    {
+        dsd::BuiltInCompressor a;
+        a.setParameterValue("threshold", -33.0f);
+        a.setParameterValue("ratio", 7.5f);
+        juce::MemoryBlock state;
+        a.getStateInformation(state);
+        dsd::BuiltInCompressor b;
+        b.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        CHECK(std::abs(b.getParameterValue("threshold") - (-33.0f)) < 0.05f);
+        CHECK(std::abs(b.getParameterValue("ratio") - 7.5f) < 0.05f);
+    }
+
+    // ---- Lives in the rack like any plugin (0 latency, bypass crossfade).
+    {
+        dsd::PluginRack rack;
+        rack.prepare(48000.0, 128);
+        const auto id = rack.addPlugin(dsd::BuiltInPlugins::create(dsd::BuiltInPlugins::kEqId), "DSD EQ");
+        CHECK(id != 0);
+        CHECK(rack.getPluginLatencySamples(id) == 0);
+        CHECK(rack.getSlot(0)->instance->getPluginDescription().pluginFormatName == dsd::BuiltInPlugins::kFormatName);
+    }
+
+    std::cout << "[PASS] Built-in processors behave as specified." << std::endl;
+}
+
 void testDeviceEnumeration()
 {
     std::cout << "[TEST] Enumerating Windows Audio Devices via JUCE..." << std::endl;
@@ -1957,6 +2080,7 @@ int main()
     testPluginDelayCompensation();
     testAdaptiveResamplingFifo();
     testPreFaderSends();
+    testBuiltInProcessors();
     testPerformanceTelemetryAndOverrun();
     testLowLatencyCaptureFifo();
     testWindowAudioCapture();
