@@ -25,6 +25,7 @@ namespace dsd
 
         channelManager.prepare(currentSampleRate, currentBlockSize);
         routingEngine.prepare(currentSampleRate, currentBlockSize);
+        autoDucker.prepare(currentSampleRate);
         busManager.prepare(currentSampleRate, currentBlockSize);
         outputManager.prepare(currentSampleRate, currentBlockSize);
         dspScheduler.setSampleRate(currentSampleRate);
@@ -97,6 +98,9 @@ namespace dsd
         // PHASE 2: Channel DSP Processing (Multicore Scheduler Parallel Dispatch)
         // ====================================================================
         dspScheduler.processChannelsParallel(channelManager, tempInputBuffer, numSamples);
+
+        // Auto-ducking: keyed from post-fader channel signals, applied before routing
+        autoDucker.process(channelManager, numSamples);
 
         // ====================================================================
         // PHASE 3: Routing Matrix 16x4 Accumulation

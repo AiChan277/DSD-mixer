@@ -3,6 +3,7 @@
 #include "Audio/MultiDeviceManager.h"
 #include "Audio/WindowAudioCapture.h"
 #include "Plugin/PluginManager.h"
+#include "Session/SceneManager.h"
 #include <juce_data_structures/juce_data_structures.h>
 
 namespace dsd
@@ -13,7 +14,7 @@ namespace dsd
     {
         auto rootObj = std::make_unique<juce::DynamicObject>();
         rootObj->setProperty("product", "DSD Mixer Level 1");
-        rootObj->setProperty("version", "1.0");
+        rootObj->setProperty("version", "1.2");
         rootObj->setProperty("sampleRate", devManager.getCurrentSampleRate());
         rootObj->setProperty("bufferSize", devManager.getCurrentBufferSize());
 
@@ -37,6 +38,9 @@ namespace dsd
             chObj->setProperty("disableOutput", ch->getDisableOutput());
             chObj->setProperty("phaseInvert", ch->getPhaseInvert());
             chObj->setProperty("forceMono", ch->getForceMono());
+            chObj->setProperty("hpfEnabled", ch->getHpfEnabled());
+            chObj->setProperty("padEnabled", ch->getPadEnabled());
+            chObj->setProperty("pfl", ch->getPfl());
             chObj->setProperty("inputDeviceName", juce::String(ch->getInputDeviceName()));
             chObj->setProperty("inputChannelIndex", ch->getInputChannelIndex());
 
@@ -88,6 +92,7 @@ namespace dsd
                 routeObj->setProperty("enabled", router.isRouteEnabled(ch, out));
                 routeObj->setProperty("sendGainDb", router.getRouteGainDb(ch, out));
                 routeObj->setProperty("sendPan", router.getRoutePan(ch, out));
+                routeObj->setProperty("preFader", router.isRoutePreFader(ch, out));
                 matrixArray.add(juce::var(routeObj.release()));
             }
         }
@@ -109,9 +114,17 @@ namespace dsd
             outObj->setProperty("monitor", out->getMonitor());
             outObj->setProperty("deviceChannelOffset", out->getDeviceChannelOffset());
             outObj->setProperty("outputDeviceName", juce::String(out->getOutputDeviceName()));
+            outObj->setProperty("limiterEnabled", out->getLimiter().isEnabled());
+            outObj->setProperty("limiterCeilingDb", out->getLimiter().getCeilingDb());
+            outObj->setProperty("limiterReleaseMs", out->getLimiter().getReleaseMs());
             outputsArray.add(juce::var(outObj.release()));
         }
         rootObj->setProperty("outputs", outputsArray);
+
+        // 4. Engine features: delay compensation, ducking, scene memory
+        rootObj->setProperty("pdcEnabled", engine.isPluginDelayCompensationEnabled());
+        rootObj->setProperty("autoDuck", SceneManager::encodeDuckRules(engine.getAutoDucker()));
+        rootObj->setProperty("scenes", SceneManager::getInstance().toVar());
 
         // Write to file as formatted JSON
         juce::var rootVar(rootObj.release());
@@ -162,6 +175,10 @@ namespace dsd
                     ch->setDisableOutput(static_cast<bool>(item["disableOutput"]));
                     ch->setPhaseInvert(static_cast<bool>(item["phaseInvert"]));
                     ch->setForceMono(static_cast<bool>(item["forceMono"]));
+                    ch->setHpfEnabled(static_cast<bool>(item.getProperty("hpfEnabled", false)));
+                    ch->setPadEnabled(static_cast<bool>(item.getProperty("padEnabled", false)));
+                    if (static_cast<bool>(item.getProperty("pfl", false)))
+                        ch->setPfl(true);
 
                     // Restore Input Device & Source
                     juce::String devName = item.hasProperty("inputDeviceName") ? item["inputDeviceName"].toString() : "None";
@@ -309,6 +326,7 @@ namespace dsd
                     router.setRouteEnabled(ch, out, static_cast<bool>(item["enabled"]));
                     router.setRouteGainDb(ch, out, static_cast<float>(item["sendGainDb"]));
                     router.setRoutePan(ch, out, static_cast<float>(item["sendPan"]));
+                    router.setRoutePreFader(ch, out, static_cast<bool>(item.getProperty("preFader", false)));
                 }
             }
         }
@@ -332,6 +350,9 @@ namespace dsd
                     out->setMute(static_cast<bool>(item["mute"]));
                     out->setMonitor(static_cast<bool>(item["monitor"]));
                     out->setDeviceChannelOffset(static_cast<int>(item["deviceChannelOffset"]));
+                    out->getLimiter().setCeilingDb(static_cast<float>(item.getProperty("limiterCeilingDb", -1.0)));
+                    out->getLimiter().setReleaseMs(static_cast<float>(item.getProperty("limiterReleaseMs", 100.0)));
+                    out->getLimiter().setEnabled(static_cast<bool>(item.getProperty("limiterEnabled", false)));
 
                     if (item.hasProperty("outputDeviceName"))
                     {
@@ -341,6 +362,14 @@ namespace dsd
                 }
             }
         }
+
+        // 4. Engine features (absent in pre-1.2 sessions: keep defaults)
+        if (rootObj->hasProperty("pdcEnabled"))
+            engine.setPluginDelayCompensationEnabled(static_cast<bool>(rootObj->getProperty("pdcEnabled")));
+        if (rootObj->hasProperty("autoDuck"))
+            SceneManager::decodeDuckRules(engine.getAutoDucker(), rootObj->getProperty("autoDuck"));
+        if (rootObj->hasProperty("scenes"))
+            SceneManager::getInstance().fromVar(rootObj->getProperty("scenes"));
 
         return true;
     }

@@ -6,6 +6,7 @@
 #include "Channel/ChannelManager.h"
 #include "Scheduler/DSPScheduler.h"
 #include "Routing/RoutingEngine.h"
+#include "Routing/AutoDucker.h"
 #include "Bus/BusManager.h"
 #include "Output/OutputManager.h"
 #include "Audio/WindowAudioCapture.h"
@@ -39,6 +40,9 @@ namespace dsd
 
         RoutingEngine& getRoutingEngine() noexcept { return routingEngine; }
         const RoutingEngine& getRoutingEngine() const noexcept { return routingEngine; }
+
+        AutoDucker& getAutoDucker() noexcept { return autoDucker; }
+        const AutoDucker& getAutoDucker() const noexcept { return autoDucker; }
 
         BusManager& getBusManager() noexcept { return busManager; }
         const BusManager& getBusManager() const noexcept { return busManager; }
@@ -83,6 +87,7 @@ namespace dsd
         ChannelManager channelManager;
         DSPScheduler   dspScheduler;
         RoutingEngine  routingEngine;
+        AutoDucker     autoDucker;
         BusManager     busManager;
         OutputManager  outputManager;
 

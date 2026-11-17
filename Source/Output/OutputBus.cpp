@@ -37,6 +37,8 @@ namespace dsd
         faderProcessor.reset(GainProcessor::dbToLinear(faderDb.load()));
 
         meterProcessor.prepare(sampleRate);
+        limiter.prepare(sampleRate);
+        loudness.prepare(sampleRate);
 
         if (outputSink != nullptr)
             outputSink->prepare(sampleRate, maxBlockSize);
@@ -66,6 +68,9 @@ namespace dsd
         const float targetFader = isMuted ? -60.0f : faderDb.load(std::memory_order_relaxed);
         faderProcessor.setTargetGainDb(targetFader);
         faderProcessor.processBlock(busBuffer.getArrayOfWritePointers(), 2, numSamples);
+
+        limiter.process(busBuffer.getWritePointer(0), busBuffer.getWritePointer(1), numSamples);
+        loudness.process(busBuffer.getReadPointer(0), busBuffer.getReadPointer(1), numSamples);
 
         meterProcessor.processBlock(busBuffer.getReadPointer(0),
                                     busBuffer.getReadPointer(1),

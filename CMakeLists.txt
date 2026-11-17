@@ -73,6 +73,7 @@ target_sources(DSDMixer PRIVATE
     Source/Channel/ChannelManager.cpp
     Source/Routing/RoutingEngine.h
     Source/Routing/RoutingEngine.cpp
+    Source/Routing/AutoDucker.cpp
     Source/Bus/AudioBus.h
     Source/Bus/AudioBus.cpp
     Source/Bus/BusManager.h
@@ -88,6 +89,7 @@ target_sources(DSDMixer PRIVATE
     Source/Plugin/BuiltInPlugins.cpp
     Source/Session/SessionManager.h
     Source/Session/SessionManager.cpp
+    Source/Session/SceneManager.cpp
     Source/Session/AppSettings.h
     Source/Session/AppSettings.cpp
     Source/UI/DSDLookAndFeel.h
@@ -186,6 +188,7 @@ add_executable(AudioEngineTests
     Source/Channel/ChannelManager.cpp
     Source/Scheduler/DSPScheduler.cpp
     Source/Routing/RoutingEngine.cpp
+    Source/Routing/AutoDucker.cpp
     Source/Bus/AudioBus.cpp
     Source/Bus/BusManager.cpp
     Source/Output/OutputBus.cpp
@@ -196,6 +199,7 @@ add_executable(AudioEngineTests
     Source/Audio/AudioEngine.cpp
     Source/Audio/ProcessCpuTracker.cpp
     Source/Session/SessionManager.cpp
+    Source/Session/SceneManager.cpp
     Source/Audio/AudioDeviceManager.cpp
     Source/Audio/MultiDeviceManager.cpp
     Source/Audio/WindowAudioCapture.cpp
@@ -243,6 +247,7 @@ add_executable(ControlProtocolTests
     Source/Channel/ChannelManager.cpp
     Source/Scheduler/DSPScheduler.cpp
     Source/Routing/RoutingEngine.cpp
+    Source/Routing/AutoDucker.cpp
     Source/Bus/AudioBus.cpp
     Source/Bus/BusManager.cpp
     Source/Output/OutputBus.cpp
@@ -251,6 +256,7 @@ add_executable(ControlProtocolTests
     Source/Plugin/PluginManager.cpp
     Source/Plugin/BuiltInPlugins.cpp
     Source/Session/SessionManager.cpp
+    Source/Session/SceneManager.cpp
     Source/DSP/MeterProcessor.cpp
 )
 

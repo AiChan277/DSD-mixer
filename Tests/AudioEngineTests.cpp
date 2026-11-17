@@ -23,6 +23,10 @@
 #include "Audio/BlockTimingHistogram.h"
 #include "Audio/AdaptiveResamplingFifo.h"
 #include "Plugin/BuiltInPlugins.h"
+#include "Routing/AutoDucker.h"
+#include "DSP/TruePeakLimiter.h"
+#include "DSP/LoudnessMeter.h"
+#include "Session/SceneManager.h"
 
 class MockAudioPluginInstance : public juce::AudioPluginInstance
 {
@@ -1124,6 +1128,280 @@ void testBuiltInProcessors()
     std::cout << "[PASS] Built-in processors behave as specified." << std::endl;
 }
 
+void testAutoDucking()
+{
+    std::cout << "[TEST] Running Auto-ducking tests..." << std::endl;
+
+    constexpr int n = 256;
+    dsd::ChannelManager chMgr;
+    chMgr.initializeDefaultChannels(dsd::NUM_CHANNELS_LEVEL1);
+    chMgr.prepare(48000.0, n);
+    chMgr.getChannel(0)->setInputSource(std::make_unique<ConstantInputSource>(0.5f)); // mic (trigger)
+    chMgr.getChannel(1)->setInputSource(std::make_unique<ConstantInputSource>(0.3f)); // music (ducked)
+
+    dsd::AutoDucker ducker;
+    ducker.prepare(48000.0);
+    auto& rule = ducker.getRule(0);
+    rule.triggerChannel.store(0);
+    rule.targetMask.store(1u << 1 | 1u << 0); // includes trigger itself: must be ignored
+    rule.thresholdDb.store(-30.0f);
+    rule.depthDb.store(-12.0f);
+    rule.attackMs.store(5.0f);
+    rule.holdMs.store(0.0f);
+    rule.releaseMs.store(50.0f);
+    rule.enabled.store(true);
+
+    juce::AudioBuffer<float> devIn(2, n);
+    devIn.clear();
+    float prev = -1.0f, maxStep = 0.0f;
+    auto run = [&](int blocks) {
+        for (int b = 0; b < blocks; ++b)
+        {
+            chMgr.processChannels(devIn, n);
+            ducker.process(chMgr, n);
+            const auto& buf = chMgr.getChannel(1)->getOutputBuffer();
+            for (int i = 0; i < n; ++i)
+            {
+                if (prev >= 0.0f)
+                    maxStep = std::max(maxStep, std::abs(buf.getSample(0, i) - prev));
+                prev = buf.getSample(0, i);
+            }
+        }
+    };
+
+    const float undDucked = 0.3f * 0.70710678f; // centre pan
+    run(40); // 200 ms with the mic live
+    CHECK(rule.triggered.load());
+    CHECK(std::abs(ducker.getChannelDuckDb(1) - (-12.0f)) < 0.2f);
+    CHECK(ducker.getChannelDuckDb(0) == 0.0f); // the trigger is never ducked
+    const float ducked = chMgr.getChannel(1)->getOutputBuffer().getSample(0, n - 1);
+    CHECK(std::abs(20.0f * std::log10(ducked / undDucked) - (-12.0f)) < 0.3f);
+    CHECK(std::abs(chMgr.getChannel(0)->getOutputBuffer().getSample(0, n - 1) - 0.5f * 0.70710678f) < 1.0e-4f);
+
+    // Mic muted: the music comes back up (release), smoothly.
+    chMgr.getChannel(0)->setMute(true);
+    run(80); // 425 ms
+    CHECK(!rule.triggered.load());
+    CHECK(std::abs(chMgr.getChannel(1)->getOutputBuffer().getSample(0, n - 1) - undDucked) < 0.002f);
+    CHECK(maxStep < 0.01f);
+
+    // Disabled rule does nothing.
+    chMgr.getChannel(0)->setMute(false);
+    rule.enabled.store(false);
+    run(40);
+    CHECK(std::abs(chMgr.getChannel(1)->getOutputBuffer().getSample(0, n - 1) - undDucked) < 1.0e-4f);
+
+    std::cout << "[PASS] Ducked music by " << 20.0f * std::log10(ducked / undDucked) << " dB, max step " << maxStep << "." << std::endl;
+}
+
+static void fillStereoSine(juce::AudioBuffer<float>& buf, double& phase, double freq, float amp, double sr)
+{
+    const double inc = 2.0 * juce::MathConstants<double>::pi * freq / sr;
+    for (int i = 0; i < buf.getNumSamples(); ++i)
+    {
+        const float v = amp * static_cast<float>(std::sin(phase));
+        phase += inc;
+        buf.setSample(0, i, v);
+        buf.setSample(1, i, v);
+    }
+}
+
+void testTruePeakLimiter()
+{
+    std::cout << "[TEST] Running true-peak output limiter tests..." << std::endl;
+
+    constexpr double sr = 48000.0;
+    constexpr int n = 256;
+    juce::AudioBuffer<float> buf(2, n);
+    double phase = 0.0;
+
+    // Disabled = bit-exact pass-through, zero latency.
+    dsd::TruePeakLimiter lim;
+    lim.prepare(sr);
+    CHECK(lim.getLatencySamples() == 0);
+    fillStereoSine(buf, phase, 1000.0, 1.5f, sr);
+    juce::AudioBuffer<float> copy(buf);
+    lim.process(buf.getWritePointer(0), buf.getWritePointer(1), n);
+    for (int i = 0; i < n; ++i)
+        CHECK(buf.getSample(0, i) == copy.getSample(0, i));
+
+    // Enabled with -1 dBTP ceiling on a +3.5 dBFS sine (with inter-sample peaks).
+    lim.setEnabled(true);
+    lim.setCeilingDb(-1.0f);
+    CHECK(lim.getLatencySamples() > 0);
+    dsd::TruePeakDetector check;
+    const float ceiling = std::pow(10.0f, -1.0f / 20.0f);
+    float maxTp = 0.0f;
+    for (int b = 0; b < 200; ++b)
+    {
+        fillStereoSine(buf, phase, 11025.0 + 7.0, 1.5f, sr); // near fs/4: big inter-sample overs
+        lim.process(buf.getWritePointer(0), buf.getWritePointer(1), n);
+        if (b > 20)
+            for (int i = 0; i < n; ++i)
+                maxTp = std::max(maxTp, check.push(buf.getSample(0, i)));
+    }
+    const float maxTpDb = 20.0f * std::log10(maxTp);
+    CHECK(maxTpDb <= -0.9f);            // true peak held at the -1 dBTP ceiling (0.1 dB checker tolerance)
+    CHECK(lim.getGainReductionDb() < -3.0f);
+
+    // A quiet signal passes unchanged (just delayed).
+    dsd::TruePeakLimiter lim2;
+    lim2.prepare(sr);
+    lim2.setEnabled(true);
+    float peakOut = 0.0f;
+    for (int b = 0; b < 50; ++b)
+    {
+        fillStereoSine(buf, phase, 1000.0, 0.25f, sr);
+        lim2.process(buf.getWritePointer(0), buf.getWritePointer(1), n);
+        if (b > 10) peakOut = std::max(peakOut, buf.getMagnitude(0, 0, n));
+    }
+    CHECK(std::abs(peakOut - 0.25f) < 0.002f);
+    CHECK(lim2.getGainReductionDb() > -0.01f);
+    (void)ceiling;
+
+    std::cout << "[PASS] Limiter: true peak " << maxTpDb << " dBTP (ceiling -1), GR " << lim.getGainReductionDb() << " dB." << std::endl;
+}
+
+void testLoudnessMeter()
+{
+    std::cout << "[TEST] Running BS.1770 loudness meter tests..." << std::endl;
+
+    for (double sr : { 48000.0, 44100.0 })
+    {
+        dsd::LoudnessMeter meter;
+        meter.prepare(sr);
+        juce::AudioBuffer<float> buf(2, 512);
+        double phase = 0.0;
+
+        // Reference: stereo 1 kHz sine at -20 dBFS peak reads -20.0 LUFS.
+        const int blocks = static_cast<int>(sr * 6.0 / 512);
+        for (int b = 0; b < blocks; ++b)
+        {
+            fillStereoSine(buf, phase, 1000.0, 0.1f, sr);
+            meter.process(buf.getReadPointer(0), buf.getReadPointer(1), 512);
+        }
+        CHECK(std::abs(meter.getMomentaryLufs() - (-20.0f)) < 0.15f);
+        CHECK(std::abs(meter.getShortTermLufs() - (-20.0f)) < 0.15f);
+        CHECK(std::abs(meter.getIntegratedLufs() - (-20.0f)) < 0.15f);
+        CHECK(std::abs(meter.getTruePeakMaxDb() - (-20.0f)) < 0.2f);
+        std::cout << "  " << sr << " Hz: M " << meter.getMomentaryLufs() << "  S " << meter.getShortTermLufs()
+                  << "  I " << meter.getIntegratedLufs() << " LUFS, TP " << meter.getTruePeakMaxDb() << " dBTP" << std::endl;
+
+        // Relative gate: add 10 s at -40 dBFS (20 LU quieter): excluded from integrated.
+        const int quietBlocks = static_cast<int>(sr * 10.0 / 512);
+        for (int b = 0; b < quietBlocks; ++b)
+        {
+            fillStereoSine(buf, phase, 1000.0, 0.01f, sr);
+            meter.process(buf.getReadPointer(0), buf.getReadPointer(1), 512);
+        }
+        CHECK(std::abs(meter.getIntegratedLufs() - (-20.0f)) < 0.2f);
+        CHECK(std::abs(meter.getShortTermLufs() - (-40.0f)) < 0.2f);
+
+        // Silence is below the absolute gate and does not drag integrated down.
+        buf.clear();
+        for (int b = 0; b < quietBlocks; ++b)
+            meter.process(buf.getReadPointer(0), buf.getReadPointer(1), 512);
+        CHECK(std::abs(meter.getIntegratedLufs() - (-20.0f)) < 0.2f);
+
+        meter.requestReset();
+        meter.process(buf.getReadPointer(0), buf.getReadPointer(1), 512);
+        CHECK(meter.getIntegratedLufs() <= -199.0f);
+    }
+
+    std::cout << "[PASS] Loudness meter matches the BS.1770 reference and gating rules." << std::endl;
+}
+
+void testScenesAndExtendedSession()
+{
+    std::cout << "[TEST] Running Scenes and extended session persistence tests..." << std::endl;
+
+    auto& scenes = dsd::SceneManager::getInstance();
+    juce::var savedScenes = scenes.toVar(); // keep the user's real scene file untouched at the end
+
+    dsd::AudioEngine engine;
+    auto& chMgr = engine.getChannelManager();
+    auto* ch0 = chMgr.getChannel(0);
+    const auto plugId = ch0->getPluginRack().addPlugin(dsd::BuiltInPlugins::create(dsd::BuiltInPlugins::kCompressorId), "DSD Compressor");
+
+    // ---- Scene A
+    ch0->setFaderDb(-6.0f);
+    ch0->setMute(false);
+    ch0->setHpfEnabled(true);
+    engine.getRoutingEngine().setRouteEnabled(0, 2, true);
+    engine.getRoutingEngine().setRoutePreFader(0, 2, true);
+    engine.getOutputManager().getOutput(1)->getLimiter().setEnabled(true);
+    engine.getOutputManager().getOutput(1)->getLimiter().setCeilingDb(-2.0f);
+    engine.getAutoDucker().getRule(0).triggerChannel.store(0);
+    engine.getAutoDucker().getRule(0).targetMask.store(0b1100);
+    engine.getAutoDucker().getRule(0).enabled.store(true);
+    engine.setPluginDelayCompensationEnabled(true);
+    ch0->getPluginRack().setBypassById(plugId, false);
+    scenes.store(0, engine);
+    scenes.setName(0, "Show Open");
+    CHECK(scenes.isUsed(0));
+    CHECK(scenes.getName(0) == "Show Open");
+
+    // ---- Change everything
+    ch0->setFaderDb(-30.0f);
+    ch0->setMute(true);
+    ch0->setHpfEnabled(false);
+    engine.getRoutingEngine().setRouteEnabled(0, 2, false);
+    engine.getRoutingEngine().setRoutePreFader(0, 2, false);
+    engine.getOutputManager().getOutput(1)->getLimiter().setEnabled(false);
+    engine.getAutoDucker().getRule(0).enabled.store(false);
+    engine.setPluginDelayCompensationEnabled(false);
+    ch0->getPluginRack().setBypassById(plugId, true);
+
+    // ---- Recall
+    CHECK(scenes.recall(0, engine));
+    CHECK(scenes.getLastRecalled() == 0);
+    CHECK(std::abs(ch0->getFaderDb() - (-6.0f)) < 1.0e-4f);
+    CHECK(!ch0->getMute());
+    CHECK(ch0->getHpfEnabled());
+    CHECK(engine.getRoutingEngine().isRouteEnabled(0, 2));
+    CHECK(engine.getRoutingEngine().isRoutePreFader(0, 2));
+    CHECK(engine.getOutputManager().getOutput(1)->getLimiter().isEnabled());
+    CHECK(std::abs(engine.getOutputManager().getOutput(1)->getLimiter().getCeilingDb() - (-2.0f)) < 1.0e-4f);
+    CHECK(engine.getAutoDucker().getRule(0).enabled.load());
+    CHECK(engine.getAutoDucker().getRule(0).targetMask.load() == 0b1100u);
+    CHECK(engine.isPluginDelayCompensationEnabled());
+    CHECK(!ch0->getPluginRack().isBypassedById(plugId));
+    CHECK(!scenes.recall(5, engine)); // empty slot
+
+    // ---- Session file round trip of every new field, including scenes and a built-in plugin
+    ch0->setPadEnabled(true);
+    engine.getOutputManager().getOutput(1)->getLimiter().setReleaseMs(250.0f);
+    auto tmp = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("dsd_phase3_session_test.dsd");
+    dsd::AudioDeviceManager devMgr;
+    CHECK(dsd::SessionManager::saveSessionToFile(tmp, engine, devMgr));
+
+    scenes.clear(0);
+    CHECK(!scenes.isUsed(0));
+
+    dsd::AudioEngine restored;
+    CHECK(dsd::SessionManager::loadSessionFromFile(tmp, restored, devMgr));
+    auto* r0 = restored.getChannelManager().getChannel(0);
+    CHECK(r0->getHpfEnabled());
+    CHECK(r0->getPadEnabled());
+    CHECK(restored.getRoutingEngine().isRoutePreFader(0, 2));
+    CHECK(restored.getOutputManager().getOutput(1)->getLimiter().isEnabled());
+    CHECK(std::abs(restored.getOutputManager().getOutput(1)->getLimiter().getReleaseMs() - 250.0f) < 1.0e-3f);
+    CHECK(restored.isPluginDelayCompensationEnabled());
+    CHECK(restored.getAutoDucker().getRule(0).enabled.load());
+    CHECK(restored.getAutoDucker().getRule(0).triggerChannel.load() == 0);
+    CHECK(scenes.isUsed(0));
+    CHECK(scenes.getName(0) == "Show Open");
+    CHECK(r0->getPluginRack().getNumPlugins() == 1);
+    if (r0->getPluginRack().getNumPlugins() == 1)
+        CHECK(r0->getPluginRack().getSlot(0)->instance->getName() == "DSD Compressor");
+
+    tmp.deleteFile();
+    scenes.fromVar(savedScenes);
+    scenes.autoSave();
+
+    std::cout << "[PASS] Scenes recall the mix; sessions keep PRE/POST, limiter, ducking, PDC, HPF/PAD, built-ins and scenes." << std::endl;
+}
+
 void testDeviceEnumeration()
 {
     std::cout << "[TEST] Enumerating Windows Audio Devices via JUCE..." << std::endl;
@@ -2081,6 +2359,10 @@ int main()
     testAdaptiveResamplingFifo();
     testPreFaderSends();
     testBuiltInProcessors();
+    testAutoDucking();
+    testTruePeakLimiter();
+    testLoudnessMeter();
+    testScenesAndExtendedSession();
     testPerformanceTelemetryAndOverrun();
     testLowLatencyCaptureFifo();
     testWindowAudioCapture();

@@ -122,6 +122,10 @@ namespace dsd
         const MeterValues& getMeter(MeterStage stage) const noexcept;
         MeterValues& getMeter(MeterStage stage) noexcept;
 
+        // Audio thread: scale the post-fader output (program and DM taps) by a
+        // linear ramp g0 -> g1 across the block. Used by the auto-ducker.
+        void applyOutputGainRamp(float g0, float g1, int numSamples) noexcept;
+
         // Buffers
         const juce::AudioBuffer<float>& getOutputBuffer() const noexcept { return channelBuffer; }
         const juce::AudioBuffer<float>& getPflBuffer() const noexcept { return pflBuffer; }   // Post-VST, pre-fader

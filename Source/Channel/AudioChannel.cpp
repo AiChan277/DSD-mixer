@@ -232,6 +232,18 @@ namespace dsd
         dmBuffer.copyFrom(1, 0, channelBuffer.getReadPointer(1), numSamples);
     }
 
+    void AudioChannel::applyOutputGainRamp(float g0, float g1, int numSamples) noexcept
+    {
+        if (numSamples <= 0 || channelBuffer.getNumSamples() < numSamples || dmBuffer.getNumSamples() < numSamples)
+            return;
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            channelBuffer.applyGainRamp(ch, 0, numSamples, g0, g1);
+            dmBuffer.applyGainRamp(ch, 0, numSamples, g0, g1);
+        }
+    }
+
     const MeterValues& AudioChannel::getMeter(MeterStage stage) const noexcept
     {
         switch (stage)
