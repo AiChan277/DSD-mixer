@@ -123,6 +123,12 @@ private:
     std::vector<float> line;
 };
 
+// Post-pan taps of a centred channel carry the constant-power pan law (-3 dB).
+constexpr float kCentrePan = 0.70710678f;
+// Gain, fader and mute are smoothed (~15 ms exponential); 40 blocks of 128
+// samples (~107 ms) lets them settle before reading steady-state levels.
+constexpr int kSettleBlocks = 40;
+
 void testGainProcessor()
 {
     std::cout << "[TEST] Running GainProcessor tests..." << std::endl;
@@ -174,6 +180,11 @@ void testMeterProcessor()
 
     CHECK(std::abs(values.peakL.load() - 0.5f) < 0.001f);
     CHECK(std::abs(values.peakR.load() - 0.8f) < 0.001f);
+    CHECK(!values.clipped.load());
+
+    // Clip detection is suppressed for the first 250 ms (start-up transients).
+    for (int b = 0; b < 100; ++b)
+        meter.processBlock(left.data(), right.data(), numSamples, values);
     CHECK(!values.clipped.load());
 
     std::vector<float> clippedSamples(numSamples, 1.05f);
@@ -276,12 +287,12 @@ void testMulticoreScheduler()
     // Needs 4 consecutive high load blocks to trigger attack
     for (int b = 0; b < 3; ++b)
         scheduler.updateAdaptiveWorkerCount(0.0020, deadlineSec, 16);
-    // Still 4 before 4th block
-    CHECK(scheduler.getActiveWorkerCount() == 4);
-
-    // 4th block triggers fast attack (+2 -> 6 workers)
-    scheduler.updateAdaptiveWorkerCount(0.0020, deadlineSec, 16);
+    // 16 active channels raise the task-graph floor to 6 workers immediately
     CHECK(scheduler.getActiveWorkerCount() == 6);
+
+    // 4th consecutive high-load block triggers fast attack (+2 -> 8 workers)
+    scheduler.updateAdaptiveWorkerCount(0.0020, deadlineSec, 16);
+    CHECK(scheduler.getActiveWorkerCount() == 8);
 
     // Extreme load spike: dspTime = 2.3 ms (>80% of deadline)
     for (int b = 0; b < 4; ++b)
@@ -2056,8 +2067,9 @@ void testPreGainMetering()
     juce::AudioBuffer<float> devIn(2, 128);
     devIn.clear();
 
-    // Process a block
-    ch.processBlock(devIn, 128);
+    // Process until the gain smoother settles
+    for (int b = 0; b < kSettleBlocks; ++b)
+        ch.processBlock(devIn, 128);
 
     // Meter Pre-Gain (Stage A) must read the raw input (~0.12589f) unaffected by +12 dB gain
     const auto& preGain = ch.getMeterPreGain();
@@ -2070,7 +2082,8 @@ void testPreGainMetering()
 
     // Now test extreme cut: Gain = -60 dB
     ch.setGainDb(-60.0f);
-    ch.processBlock(devIn, 128);
+    for (int b = 0; b < kSettleBlocks; ++b)
+        ch.processBlock(devIn, 128);
 
     // Stage A Pre-Gain meter must STILL read ~0.12589f
     const auto& preGain2 = ch.getMeterPreGain();
@@ -2100,26 +2113,29 @@ void testGainAndFaderControls()
     // 1. Gain at 0 dB, Fader at 0 dB
     ch.setGainDb(0.0f);
     ch.setFaderDb(0.0f);
-    ch.processBlock(devIn, 128);
+    for (int b = 0; b < kSettleBlocks; ++b)
+        ch.processBlock(devIn, 128);
 
     float postGain1 = ch.getMeterPostGain().peakL.load();
     float postFader1 = ch.getMeterPostFader().peakL.load();
     CHECK(std::abs(postGain1 - 0.5f) < 0.02f);
-    CHECK(std::abs(postFader1 - 0.5f) < 0.02f);
+    CHECK(std::abs(postFader1 - 0.5f * kCentrePan) < 0.02f); // post-pan
 
     // 2. Gain at +6 dB (~2x -> 1.0f), Fader at -6 dB (~0.5x -> 0.5f)
     ch.setGainDb(6.0f);
     ch.setFaderDb(-6.0f);
-    ch.processBlock(devIn, 128);
+    for (int b = 0; b < kSettleBlocks; ++b)
+        ch.processBlock(devIn, 128);
 
     float postGain2 = ch.getMeterPostGain().peakL.load();
     float postFader2 = ch.getMeterPostFader().peakL.load();
     CHECK(std::abs(postGain2 - 1.0f) < 0.05f);
-    CHECK(std::abs(postFader2 - 0.5f) < 0.05f);
+    CHECK(std::abs(postFader2 - 0.5f * kCentrePan) < 0.05f);
 
     // 3. Gain at -60 dB (silence)
     ch.setGainDb(-60.0f);
-    ch.processBlock(devIn, 128);
+    for (int b = 0; b < kSettleBlocks; ++b)
+        ch.processBlock(devIn, 128);
     CHECK(ch.getMeterPostGain().peakL.load() < 0.001f);
     CHECK(ch.getMeterPostFader().peakL.load() < 0.001f);
 
@@ -2152,7 +2168,7 @@ void testOnOffVsMuteSemantics()
     ch.processBlock(devIn, 128);
     // Channel processing itself keeps running (meters are active)
     CHECK(ch.getMeterPreGain().peakL.load() > 0.4f);
-    CHECK(ch.getMeterPostFader().peakL.load() > 0.4f);
+    CHECK(ch.getMeterPostFader().peakL.load() > 0.4f * kCentrePan);
 
     // 2. Toggle MUTE -> does NOT touch disableOutput
     ch.setDisableOutput(false);
@@ -2160,7 +2176,8 @@ void testOnOffVsMuteSemantics()
     CHECK(ch.getDisableOutput() == false);
     CHECK(ch.getMute() == true);
 
-    ch.processBlock(devIn, 128);
+    for (int b = 0; b < kSettleBlocks; ++b) // mute ramps down
+        ch.processBlock(devIn, 128);
     // With Mute, PreGain is still active, but PostFader is 0.0f
     CHECK(ch.getMeterPreGain().peakL.load() > 0.4f);
     CHECK(ch.getMeterPostFader().peakL.load() < 0.001f);
@@ -2190,18 +2207,26 @@ void testHpfDsp()
 
     // HPF OFF: low-frequency content passes unattenuated
     ch.setHpfEnabled(false);
-    for (int i = 0; i < 10; ++i)
+    float outLfBypass = 0.0f;
+    for (int i = 0; i < 20; ++i) // 20 x 256 samples > one 30 Hz period: catch the peak
+    {
         ch.processBlock(devIn, 256);
-
-    float outLfBypass = ch.getOutputBuffer().getMagnitude(0, 0, 256);
-    CHECK(outLfBypass > 0.7f); // Full 30 Hz signal passes
+        if (i >= 10)
+            outLfBypass = std::max(outLfBypass, ch.getOutputBuffer().getMagnitude(0, 0, 256));
+    }
+    CHECK(outLfBypass > 0.7f * kCentrePan); // Full 30 Hz signal passes (post-pan)
 
     // HPF ON: 30 Hz should be significantly attenuated (>12 dB down for 80 Hz 2nd-order)
     ch.setHpfEnabled(true);
     for (int i = 0; i < 20; ++i) // allow IIR filter state to settle
         ch.processBlock(devIn, 256);
 
-    float outLfFiltered = ch.getOutputBuffer().getMagnitude(0, 0, 256);
+    float outLfFiltered = 0.0f;
+    for (int i = 0; i < 10; ++i) // peak over more than one 30 Hz period
+    {
+        ch.processBlock(devIn, 256);
+        outLfFiltered = std::max(outLfFiltered, ch.getOutputBuffer().getMagnitude(0, 0, 256));
+    }
     CHECK(outLfFiltered < 0.25f); // 30 Hz attenuated significantly (< 25% of input)
     CHECK(outLfFiltered < outLfBypass * 0.35f);
 
@@ -2214,7 +2239,7 @@ void testHpfDsp()
         ch.processBlock(devIn, 256);
 
     float outHfFiltered = ch.getOutputBuffer().getMagnitude(0, 0, 256);
-    CHECK(outHfFiltered > 0.75f); // 1 kHz passes cleanly with virtually zero loss
+    CHECK(outHfFiltered > 0.75f * kCentrePan); // 1 kHz passes cleanly with virtually zero loss
 
     std::cout << "[PASS] HPF DSP tests passed cleanly." << std::endl;
 }
@@ -2326,30 +2351,32 @@ void testDirectMonitorAndPflRouting()
 
     juce::AudioBuffer<float> dummyIn(2, 128);
     dummyIn.clear();
+    auto runSettled = [&]() {
+        for (int b = 0; b < kSettleBlocks; ++b)
+        {
+            chMgr.processChannels(dummyIn, 128);
+            router.routeChannelsToOutputs(chMgr, outMgr, 128);
+            outMgr.processOutputs(128);
+        }
+    };
 
     // At 0 dB fader, DM output on Monitor bus should be ~0.8f
-    chMgr.processChannels(dummyIn, 128);
-    router.routeChannelsToOutputs(chMgr, outMgr, 128);
-    outMgr.processOutputs(128);
+    runSettled();
     float outMonDm1 = outMon->getBuffer().getMagnitude(0, 0, 128);
-    CHECK(outMonDm1 > 0.7f && outMonDm1 < 0.9f);
+    CHECK(outMonDm1 > 0.7f * kCentrePan && outMonDm1 < 0.9f * kCentrePan); // DM is post-fader, post-pan
 
     // Lower fader to -6 dB (~0.5x linear): DM MUST follow fader!
     ch0->setFaderDb(-6.0f);
-    chMgr.processChannels(dummyIn, 128);
-    router.routeChannelsToOutputs(chMgr, outMgr, 128);
-    outMgr.processOutputs(128);
+    runSettled();
     float outMonDm2 = outMon->getBuffer().getMagnitude(0, 0, 128);
-    CHECK(outMonDm2 > 0.35f && outMonDm2 < 0.45f); // Half level: follows fader!
+    CHECK(outMonDm2 > 0.35f * kCentrePan && outMonDm2 < 0.45f * kCentrePan); // Half level: follows fader!
 
     // Add VST plugin (multiplier 2.0x): DM MUST reflect VST processing!
     auto plug = std::make_unique<MockAudioPluginInstance>("GainX2", 2.0f, 0.0f);
     ch0->getPluginRack().addPlugin(std::move(plug), "GainX2");
-    chMgr.processChannels(dummyIn, 128);
-    router.routeChannelsToOutputs(chMgr, outMgr, 128);
-    outMgr.processOutputs(128);
+    runSettled();
     float outMonDmVst = outMon->getBuffer().getMagnitude(0, 0, 128);
-    CHECK(outMonDmVst > 0.7f && outMonDmVst < 0.9f); // Doubled by VST!
+    CHECK(outMonDmVst > 0.7f * kCentrePan && outMonDmVst < 0.9f * kCentrePan); // Doubled by VST!
 
     // ── 3. Test PFL bypasses fader but follows VST ──
     // Switch ch0 to PFL (which turns DM OFF)
@@ -2358,13 +2385,11 @@ void testDirectMonitorAndPflRouting()
 
     // Pull fader down to -60 dB (silence in mix): PFL MUST still be heard (bypasses fader)!
     ch0->setFaderDb(-60.0f);
-    chMgr.processChannels(dummyIn, 128);
-    router.routeChannelsToOutputs(chMgr, outMgr, 128);
-    outMgr.processOutputs(128);
+    runSettled();
 
     // Program bus (outMain) is silent for ch0 because fader is -60 dB (only ch1 at ~0.3f present)
     float outMainMag = outMain->getBuffer().getMagnitude(0, 0, 128);
-    CHECK(outMainMag > 0.2f && outMainMag < 0.4f);
+    CHECK(outMainMag > 0.2f * kCentrePan && outMainMag < 0.4f * kCentrePan);
 
     // Monitor bus (outMon) hears ch0 via PFL tap (post-VST with 2.0x gain = ~1.6f)!
     float outMonPfl = outMon->getBuffer().getMagnitude(0, 0, 128);
@@ -2372,20 +2397,18 @@ void testDirectMonitorAndPflRouting()
 
     // Move fader to +6 dB: PFL level on monitor output must NOT change!
     ch0->setFaderDb(6.0f);
-    chMgr.processChannels(dummyIn, 128);
-    router.routeChannelsToOutputs(chMgr, outMgr, 128);
-    outMgr.processOutputs(128);
+    runSettled();
     float outMonPfl2 = outMon->getBuffer().getMagnitude(0, 0, 128);
     CHECK(std::abs(outMonPfl2 - outMonPfl) < 0.05f); // PFL level invariant to fader!
 
     // ── 4. Test Dynamic Monitor Output Selection ──
+    // Pull ch0's fader back down so the program mix holds only ch1.
+    ch0->setFaderDb(-60.0f);
     // Change monitor designation: outMain becomes monitor, outMon becomes non-monitor
     outMain->setMonitor(true);
     outMon->setMonitor(false);
 
-    chMgr.processChannels(dummyIn, 128);
-    router.routeChannelsToOutputs(chMgr, outMgr, 128);
-    outMgr.processOutputs(128);
+    runSettled();
 
     // Now outMain receives the PFL feed (>1.4f)!
     float newMonMag = outMain->getBuffer().getMagnitude(0, 0, 128);
@@ -2393,7 +2416,7 @@ void testDirectMonitorAndPflRouting()
 
     // And outMon receives the normal program mix (only ch1 at ~0.3f)!
     float newProgMag = outMon->getBuffer().getMagnitude(0, 0, 128);
-    CHECK(newProgMag > 0.2f && newProgMag < 0.4f);
+    CHECK(newProgMag > 0.2f * kCentrePan && newProgMag < 0.4f * kCentrePan);
 
     std::cout << "[PASS] Direct Monitor (DM), PFL, and Mutual Exclusion routing tests passed." << std::endl;
 }
@@ -2435,8 +2458,8 @@ void testPhaseAndMono()
     auto& bufMono = ch.getOutputBuffer();
     for (int i = 0; i < 128; ++i)
     {
-        CHECK(std::abs(bufMono.getSample(0, i) - 0.4f) < 0.001f);
-        CHECK(std::abs(bufMono.getSample(1, i) - 0.4f) < 0.001f);
+        CHECK(std::abs(bufMono.getSample(0, i) - 0.4f * kCentrePan) < 0.001f);
+        CHECK(std::abs(bufMono.getSample(1, i) - 0.4f * kCentrePan) < 0.001f);
     }
 
     // 2. Phase Invert test: -0.4f
@@ -2446,8 +2469,8 @@ void testPhaseAndMono()
     auto& bufPhase = ch.getOutputBuffer();
     for (int i = 0; i < 128; ++i)
     {
-        CHECK(std::abs(bufPhase.getSample(0, i) - (-0.4f)) < 0.001f);
-        CHECK(std::abs(bufPhase.getSample(1, i) - (-0.4f)) < 0.001f);
+        CHECK(std::abs(bufPhase.getSample(0, i) - (-0.4f * kCentrePan)) < 0.001f);
+        CHECK(std::abs(bufPhase.getSample(1, i) - (-0.4f * kCentrePan)) < 0.001f);
     }
 
     std::cout << "[PASS] Phase Invert and Force Mono tests passed." << std::endl;
